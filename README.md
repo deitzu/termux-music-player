@@ -142,3 +142,60 @@ This is still an experimental MVP.
 - There is no playlist, TUI, music downloader, or music database.
 
 The point is to keep the experiment small enough that the dependency graph does not become larger than the music player itself.
+
+
+## Music cloner
+
+music-clone copies only known music formats from the Android Downloads directory into a normal Termux music directory.
+
+Default source detection checks:
+
+~~~text
+/storage/download
+~/storage/download
+~/storage/downloads
+~~~
+
+Default destination:
+
+~~~text
+~/Music
+~~~
+
+A normal run performs one scan:
+
+~~~bash
+mclone
+~~~
+
+Watch mode keeps scanning for new or updated music files:
+
+~~~bash
+mclone --watch
+~~~
+
+Change the watch interval:
+
+~~~bash
+mclone --watch --interval 10
+~~~
+
+Custom source or destination:
+
+~~~bash
+music-clone --source ~/storage/download --dest ~/Music
+~~~
+
+Non-music files are ignored. Existing files are left alone unless the source file is newer.
+
+The setup script installs the music-clone command and adds this alias to ~/.bashrc:
+
+~~~bash
+alias mclone='music-clone'
+~~~
+
+Reload the shell after installation:
+
+~~~bash
+source ~/.bashrc
+~~~
