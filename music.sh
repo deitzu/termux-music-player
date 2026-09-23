@@ -464,6 +464,7 @@ main() {
     check_dependencies
     read_metadata
 
+    mkdir -p "$HOME/.cache/$APP_NAME"
     RUNTIME_DIR="$(mktemp -d "$HOME/.cache/$APP_NAME/run.XXXXXX")"
     MPV_SOCKET="$RUNTIME_DIR/mpv.sock"
 
