@@ -141,7 +141,7 @@ scan_once() {
             copy_one "$file"
             checked=$((checked + 1))
         fi
-    done < <(find "$SOURCE_DIR" -type f -print0)
+    done < <(find -L "$SOURCE_DIR" -type f -print0)
 
     echo "Scan complete: $checked music file(s) checked."
 }
