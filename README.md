@@ -2,57 +2,111 @@
 
 A small Bash music player for Termux with synchronized lyrics from LRCLIB.
 
-The project is intentionally simple:
+## Features
 
-- Local music files are played by mpv.
-- Track metadata and duration are read with ffprobe.
-- Synchronized lyrics are fetched from LRCLIB when they are not cached.
-- Lyrics are cached locally as normal .lrc files.
-- Subtitle timing follows mpv's actual playback position through its JSON IPC socket.
-- Subtitles are printed with echo.
-- A configurable subtitle offset is available in milliseconds.
+- Plays local music files with mpv.
+- Reads title, artist, album, and duration through mpv media properties.
+- Fetches synchronized lyrics from LRCLIB when they are not already cached.
+- Stores successful lyrics locally as LRC cache files.
+- Uses mpv JSON IPC time-pos for subtitle timing.
+- Supports a configurable subtitle offset in milliseconds.
+- Prints synchronized lyrics with echo.
+- Music playback is fully local/offline.
+- Cached lyrics can also be used fully offline.
 
 ## Requirements
 
-This project currently targets Termux.
+Direct runtime dependencies:
 
-Dependencies:
-
-- bash
 - mpv
-- ffmpeg (for ffprobe)
 - curl
 - jq
 - socat
-- coreutils
+
+The player does not invoke ffprobe or ffmpeg itself anymore.
+
+Important: the current official Termux mpv package declares ffmpeg as a package dependency, along with other media libraries. Therefore installing stock mpv can still pull a large media stack. This comes from Termux's mpv package, not from this script.
 
 ## Install
 
-Clone the repository and run:
+By default, setup only checks dependencies and installs the command:
 
 ~~~bash
 bash setup.sh
 ~~~
 
-The setup script installs the dependencies, copies the player into Termux's $PREFIX/bin, and creates the default config file.
+To let setup install the runtime dependencies:
+
+~~~bash
+bash setup.sh --install-deps
+~~~
+
+The dependency installation is explicit so the script does not surprise you with a large package transaction on a device with limited storage.
 
 ## Usage
 
-Play a local music file:
+Play a local file:
 
 ~~~bash
 termux-music-player ~/Music/song.mp3
 ~~~
 
-Set a subtitle offset for one run:
+Override subtitle timing for one run:
 
 ~~~bash
-termux-music-player ~/Music/song.mp3 --offset 350
+termux-music-player ~/Music/song.mp3 --offset -350
 ~~~
 
-A positive offset delays subtitles. A negative offset makes them appear earlier.
+Positive offsets delay subtitles. Negative offsets make them appear earlier.
 
-The default configuration is:
+## How it works
+
+The player starts mpv paused first. This makes mpv the source of truth for media metadata and duration.
+
+~~~text
+local music
+    |
+    v
+   mpv (paused)
+    |
+    +--> metadata + duration
+    |
+    v
+ lyric cache
+    |
+    +--> hit ---------------------+
+    |                             |
+    +--> miss -> LRCLIB -> cache -+
+                                  |
+                                  v
+                         unpause mpv
+                                  |
+                                  v
+                         print metadata
+                                  |
+                                  v
+                           mpv JSON IPC
+                                  |
+                               time-pos
+                                  |
+                             offset math
+                                  |
+                                  v
+                            LRC pointer
+                                  |
+                                  v
+                                echo
+~~~
+
+Lyrics are fetched while mpv is paused, so a network delay does not shift the playback clock.
+
+The LRC file is parsed once at startup and stored in Bash arrays. The subtitle loop advances through those timestamps instead of rescanning the entire LRC file on every poll.
+
+Large backward seeks use a binary search to jump to the lyric active at the new position. Large forward jumps show the lyric active at the new position instead of dumping every skipped line.
+
+## Configuration
+
+Default config:
 
 ~~~text
 ~/.config/termux-music-player/config
@@ -62,46 +116,9 @@ Example:
 
 ~~~ini
 SUBTITLE_OFFSET_MS=0
-POLL_INTERVAL=0.10
+POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
 ~~~
-
-## How it works
-
-~~~text
-local music
-    |
-    v
-  ffprobe
-    |
-    +--> title / artist / album / duration
-    |
-    v
- lyric cache --------------------+
-    |                             |
-    | miss                        | hit
-    v                             |
-  LRCLIB -------------------------+
-    |
-    v
-  cached .lrc
-    |
-    v
-   mpv
-    |
-    v
-  JSON IPC -> time-pos
-    |
-    v
- subtitle timestamp + offset
-    |
-    v
-   echo
-~~~
-
-Lyrics are prepared before playback starts, so the network request does not introduce subtitle startup drift.
-
-If no cached or remotely available synchronized lyrics are found, the music still plays normally without subtitles.
 
 ## Cache
 
@@ -111,14 +128,26 @@ Lyrics are stored under:
 ~/.cache/termux-music-player/lyrics/
 ~~~
 
-Each cache file is keyed from the track metadata and duration.
+Cache keys are derived from artist, title, album, and duration.
 
-The cached file contains the synchronized LRC data returned by LRCLIB. Instrumental tracks or tracks without synchronized lyrics are cached as a marker so the player does not repeatedly fetch the same missing result.
+A successful LRCLIB response without synced lyrics can be cached as a marker. A 404 is not cached because missing lyrics can become available later.
+
+## Offline behavior
+
+Music never needs the network because the player only accepts a local music file.
+
+Cached lyrics also work without network access:
+
+~~~text
+cached .lrc
+   |
+   +--> use immediately
+~~~
+
+Without a cached lyric file, the player attempts LRCLIB and then continues playing normally when no synchronized lyric is available.
 
 ## Notes
 
-This is an experimental MVP. It intentionally does not include playlists, a TUI, streaming, music downloading, or a full music library database.
+This is an experimental MVP. It intentionally avoids playlists, streaming, music downloading, a full TUI, and a music database.
 
-mpv is controlled through its Unix-domain JSON IPC interface rather than by parsing mpv's terminal output. This keeps subtitle timing tied to the actual playback position.
-
-LRCLIB requests identify this project with a User-Agent as required by the LRCLIB API documentation.
+The project uses mpv's documented Unix-domain JSON IPC interface rather than parsing mpv terminal output.
