@@ -126,49 +126,79 @@ parse_args() {
 check_dependencies() {
     local command
 
-    for command in ffprobe curl jq mpv socat sha256sum readlink awk sed cut head basename mktemp; do
+    for command in mpv curl jq socat; do
         command -v "$command" >/dev/null 2>&1 ||
-            die "Missing dependency: $command. Run: bash setup.sh"
+            die "Missing dependency: $command. Install the required packages or use setup.sh --install-deps."
     done
 }
 
-probe_tag() {
-    local tag="$1"
-
-    ffprobe \
-        -v error \
-        -show_entries "format_tags=$tag:stream_tags=$tag" \
-        -of default=noprint_wrappers=1:nokey=1 \
-        "$MUSIC_FILE" 2>/dev/null |
-        head -n 1
+start_player_paused() {
+    mpv \
+        --no-video \
+        --force-window=no \
+        --input-ipc-server="$MPV_SOCKET" \
+        --input-terminal=no \
+        --really-quiet \
+        --pause=yes \
+        -- "$MUSIC_FILE" &
+    MPV_PID=$!
 }
 
-read_metadata() {
-    TITLE="$(probe_tag title || true)"
-    ARTIST="$(probe_tag artist || true)"
-    ALBUM="$(probe_tag album || true)"
+get_mpv_property() {
+    local property="$1"
+    local response value
+
+    response="$(mpv_request "{\"command\":[\"get_property\",\"$property\"]}" || true)"
+    [[ -n "$response" ]] || return 1
+
+    value="$(jq -r '.data // empty' <<<"$response" 2>/dev/null || true)"
+    [[ -n "$value" ]] || return 1
+
+    printf '%s\n' "$value"
+}
+
+wait_for_media_metadata() {
+    local attempt title artist duration
+
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        if [[ -S "$MPV_SOCKET" ]]; then
+            title="$(get_mpv_property 'metadata/by-key/title' || true)"
+            artist="$(get_mpv_property 'metadata/by-key/artist' || true)"
+            duration="$(get_mpv_property 'duration' || true)"
+
+            if [[ -n "$title" || -n "$artist" || "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                TITLE="$title"
+                ARTIST="$artist"
+                ALBUM="$(get_mpv_property 'metadata/by-key/album' || true)"
+                DURATION_RAW="$duration"
+                return 0
+            fi
+        fi
+
+        kill -0 "$MPV_PID" 2>/dev/null || return 1
+        sleep 0.10
+    done
+
+    return 1
+}
+
+finalize_metadata() {
+    local media_title
+
+    if [[ -z "$TITLE" ]]; then
+        media_title="$(get_mpv_property 'media-title' || true)"
+        TITLE="$media_title"
+    fi
 
     [[ -n "$TITLE" ]] || TITLE="$(basename "$MUSIC_FILE")"
-    TITLE="$(printf '%s\n' "$TITLE" | sed 's/\.[^.]*$//')"
-
     [[ -n "$ARTIST" ]] || ARTIST="Unknown Artist"
     [[ -n "$ALBUM" ]] || ALBUM="Unknown Album"
-
-    DURATION_RAW="$(
-        ffprobe \
-            -v error \
-            -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 \
-            "$MUSIC_FILE" 2>/dev/null |
-            head -n 1
-    )" || true
 
     if [[ "$DURATION_RAW" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         DURATION_LOOKUP="$(awk -v d="$DURATION_RAW" 'BEGIN { printf "%.0f", d }')"
         DURATION_DISPLAY="$(
             awk -v d="$DURATION_RAW" '
                 BEGIN {
-                    if (d < 0) d = 0
                     h = int(d / 3600)
                     m = int((d - h * 3600) / 60)
                     s = int(d % 60)
@@ -182,6 +212,25 @@ read_metadata() {
     fi
 }
 
+start_playback() {
+    local pause_state position
+
+    mpv_request '{"command":["set_property","pause",false]}' >/dev/null 2>&1 || return 1
+
+    for _ in {1..30}; do
+        pause_state="$(get_mpv_property 'pause' || true)"
+        position="$(get_mpv_property 'time-pos' || true)"
+
+        if [[ "$pause_state" == "false" &&
+              "$position" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            return 0
+        fi
+
+        sleep 0.05
+    done
+
+    return 1
+}
 make_cache_key() {
     printf '%s\0' "$ARTIST" "$TITLE" "$ALBUM" "$DURATION_LOOKUP" |
         sha256sum |
@@ -462,37 +511,52 @@ main() {
     load_config
     parse_args "$@"
     check_dependencies
-    read_metadata
 
-    mkdir -p "$HOME/.cache/$APP_NAME"
-    RUNTIME_DIR="$(mktemp -d "$HOME/.cache/$APP_NAME/run.XXXXXX")"
+    mkdir -p "$CONFIG_DIR" "$CACHE_DIR" "$RUNTIME_BASE"
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" <<'EOF'
+# Subtitle timing adjustment in milliseconds.
+# Positive values delay subtitles.
+# Negative values make subtitles appear earlier.
+SUBTITLE_OFFSET_MS=0
+
+# Poll interval for mpv playback position.
+POLL_INTERVAL=0.20
+
+# Maximum seconds for an LRCLIB request.
+LRCLIB_TIMEOUT=15
+EOF
+    fi
+
+    load_config
+
+    RUNTIME_DIR="$(mktemp -d "$RUNTIME_BASE/session.XXXXXX")"
     MPV_SOCKET="$RUNTIME_DIR/mpv.sock"
 
     trap cleanup EXIT INT TERM
 
+    start_player_paused
+
+    wait_for_media_metadata || {
+        wait "$MPV_PID" || true
+        die "mpv could not load the music file."
+    }
+
+    finalize_metadata
     prepare_lyrics
     parse_lrc
+    load_lyrics
 
-    mpv \
-        --no-video \
-        --force-window=no \
-        --input-terminal=no \
-        --input-ipc-server="$MPV_SOCKET" \
-        --really-quiet \
-        -- "$MUSIC_FILE" &
-    MPV_PID=$!
-
-    if ! wait_for_playback_start; then
+    start_playback || {
         wait "$MPV_PID" || true
-        die "mpv failed to start playback."
-    fi
+        die "mpv could not start playback."
+    }
 
     print_metadata
 
-    if [[ -s "$PARSED_LYRICS_FILE" ]]; then
-        subtitle_loop &
-        LYRIC_PID=$!
-    fi
+    subtitle_loop &
+    LYRIC_PID=$!
 
     wait "$MPV_PID"
 }
