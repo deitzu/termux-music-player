@@ -102,10 +102,11 @@ sed -i '/^# termux-music-player aliases$/,/^# end termux-music-player aliases$/d
     echo "# termux-music-player aliases"
     echo "alias music='$APP_NAME'"
     echo "alias mclone='$CLONER_NAME'"
+    echo "alias mwatch='$CLONER_NAME --watch'"
     echo "# end termux-music-player aliases"
 } >> "$BASHRC"
 
-echo "Updated aliases: music, mclone"
+echo "Updated aliases: music, mclone, mwatch"
 
 echo
 echo "Installed:"
