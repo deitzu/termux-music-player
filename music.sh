@@ -125,118 +125,98 @@ parse_args() {
 
 check_dependencies() {
     local command
-
-    for command in mpv curl jq socat; do
-        command -v "$command" >/dev/null 2>&1 ||
-            die "Missing dependency: $command. Install the required packages or use setup.sh --install-deps."
+    for command in termux-media-player curl jq sha256sum awk sed dd cut head wc mktemp; do
+        command -v "$command" >/dev/null 2>&1 || die "Missing dependency: $command"
     done
 }
 
-start_player_paused() {
-    mpv \
-        --no-video \
-        --force-window=no \
-        --input-ipc-server="$MPV_SOCKET" \
-        --input-terminal=no \
-        --really-quiet \
-        --pause=yes \
-        -- "$MUSIC_FILE" &
-    MPV_PID=$!
+trim_text() {
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
-get_mpv_property() {
-    local property="$1"
-    local response value
-
-    response="$(mpv_request "{\"command\":[\"get_property\",\"$property\"]}" || true)"
-    [[ -n "$response" ]] || return 1
-
-    value="$(jq -r '.data // empty' <<<"$response" 2>/dev/null || true)"
-    [[ -n "$value" ]] || return 1
-
-    printf '%s\n' "$value"
+parse_id3v1() {
+    local size start tag
+    size="$(wc -c < "$MUSIC_FILE")"
+    ((size >= 128)) || return 0
+    start=$((size - 128))
+    tag="$(dd if="$MUSIC_FILE" bs=1 skip="$start" count=128 2>/dev/null)"
+    [[ "$(printf '%s' "$tag" | dd bs=1 count=3 2>/dev/null)" == "TAG" ]] || return 0
+    [[ -n "$TITLE" ]] || TITLE="$(printf '%s' "$tag" | dd bs=1 skip=3 count=30 2>/dev/null | tr -d '\000' | trim_text)"
+    [[ -n "$ARTIST" ]] || ARTIST="$(printf '%s' "$tag" | dd bs=1 skip=33 count=30 2>/dev/null | tr -d '\000' | trim_text)"
+    [[ -n "$ALBUM" ]] || ALBUM="$(printf '%s' "$tag" | dd bs=1 skip=63 count=30 2>/dev/null | tr -d '\000' | trim_text)"
 }
 
-wait_for_media_metadata() {
-    local attempt title artist duration
+read_metadata() {
+    local base artist_guess title_guess
+    TITLE=""
+    ARTIST=""
+    ALBUM=""
+    parse_id3v1
 
-    for ((attempt = 0; attempt < 100; attempt++)); do
-        if [[ -S "$MPV_SOCKET" ]]; then
-            title="$(get_mpv_property 'metadata/by-key/title' || true)"
-            artist="$(get_mpv_property 'metadata/by-key/artist' || true)"
-            duration="$(get_mpv_property 'duration' || true)"
+    base="$(basename "$MUSIC_FILE")"
+    base="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//')"
 
-            if [[ -n "$title" || -n "$artist" || "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                TITLE="$title"
-                ARTIST="$artist"
-                ALBUM="$(get_mpv_property 'metadata/by-key/album' || true)"
-                DURATION_RAW="$duration"
-                return 0
-            fi
-        fi
-
-        kill -0 "$MPV_PID" 2>/dev/null || return 1
-        sleep 0.10
-    done
-
-    return 1
-}
-
-finalize_metadata() {
-    local media_title
-
-    if [[ -z "$TITLE" ]]; then
-        media_title="$(get_mpv_property 'media-title' || true)"
-        TITLE="$media_title"
+    if [[ "$base" == *" - "* ]]; then
+        artist_guess="$(printf '%s\n' "$base" | sed 's/ - .*//')"
+        title_guess="$(printf '%s\n' "$base" | sed 's/^[^ -]* - //')"
+        [[ -n "$ARTIST" ]] || ARTIST="$artist_guess"
+        [[ -n "$TITLE" ]] || TITLE="$title_guess"
+    else
+        [[ -n "$TITLE" ]] || TITLE="$base"
     fi
 
-    [[ -n "$TITLE" ]] || TITLE="$(basename "$MUSIC_FILE")"
+    [[ -n "$TITLE" ]] || TITLE="Unknown Title"
     [[ -n "$ARTIST" ]] || ARTIST="Unknown Artist"
     [[ -n "$ALBUM" ]] || ALBUM="Unknown Album"
+}
 
-    if [[ "$DURATION_RAW" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        DURATION_LOOKUP="$(awk -v d="$DURATION_RAW" 'BEGIN { printf "%.0f", d }')"
-        DURATION_DISPLAY="$(
-            awk -v d="$DURATION_RAW" '
-                BEGIN {
-                    h = int(d / 3600)
-                    m = int((d - h * 3600) / 60)
-                    s = int(d % 60)
-                    if (h > 0)
-                        printf "%d:%02d:%02d", h, m, s
-                    else
-                        printf "%02d:%02d", m, s
-                }
-            '
-        )"
+time_to_ms() {
+    local value="$1"
+    local first second third
+    first="$(printf '%s' "$value" | cut -d: -f1)"
+    second="$(printf '%s' "$value" | cut -d: -f2)"
+    third="$(printf '%s' "$value" | cut -d: -f3)"
+
+    if [[ -n "$third" ]]; then
+        printf '%d\n' $((10#$first * 3600000 + 10#$second * 60000 + 10#$third * 1000))
+    elif [[ -n "$second" ]]; then
+        printf '%d\n' $((10#$first * 60000 + 10#$second * 1000))
+    else
+        return 1
     fi
 }
 
-start_playback() {
-    local pause_state position
+read_player_info() {
+    local info position
+    info="$(termux-media-player info 2>/dev/null || true)"
+    [[ -n "$info" && "$info" != No\ track* ]] || return 1
 
-    mpv_request '{"command":["set_property","pause",false]}' >/dev/null 2>&1 || return 1
+    PLAYER_STATUS="$(printf '%s\n' "$info" | sed -n 's/^Status: //p' | head -n1)"
+    position="$(printf '%s\n' "$info" | sed -n 's/^Current Position: //p' | head -n1)"
+    [[ "$position" == */* ]] || return 1
+    position="$(printf '%s' "$position" | tr -d ' ')"
 
-    for _ in {1..30}; do
-        pause_state="$(get_mpv_property 'pause' || true)"
-        position="$(get_mpv_property 'time-pos' || true)"
+    PLAYER_POSITION_MS="$(time_to_ms "$(printf '%s' "$position" | cut -d/ -f1)")"
+    PLAYER_DURATION_MS="$(time_to_ms "$(printf '%s' "$position" | cut -d/ -f2)")"
 
-        if [[ "$pause_state" == "false" &&
-              "$position" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            return 0
-        fi
-
-        sleep 0.05
-    done
-
-    return 1
+    DURATION_DISPLAY="$(
+        awk -v ms="$PLAYER_DURATION_MS" '
+            BEGIN {
+                total = int(ms / 1000)
+                h = int(total / 3600)
+                m = int((total - h * 3600) / 60)
+                s = total % 60
+                if (h) printf "%d:%02d:%02d", h, m, s
+                else printf "%02d:%02d", m, s
+            }
+        '
+    )"
 }
 make_cache_key() {
-    printf '%s\0' "$ARTIST" "$TITLE" "$ALBUM" "$DURATION_LOOKUP" |
+    printf '%s\0' "$ARTIST" "$TITLE" "$ALBUM" |
         sha256sum |
         cut -d' ' -f1
 }
-
 find_cached_lyrics() {
     local key
     key="$(make_cache_key)"
@@ -391,39 +371,11 @@ parse_lrc() {
     [[ -s "$PARSED_LYRICS_FILE" ]] || rm -f "$PARSED_LYRICS_FILE"
 }
 
-mpv_request() {
-    local request="$1"
-
-    printf '%s\n' "$request" |
-        socat -T 0.5 - "UNIX-CONNECT:$MPV_SOCKET" 2>/dev/null |
-        tail -n 1
-}
-
-get_time_pos_ms() {
-    local response value
-
-    response="$(mpv_request '{"command":["get_property","time-pos"]}' || true)"
-    [[ -n "$response" ]] || return 1
-
-    value="$(jq -r '.data // empty' <<<"$response" 2>/dev/null || true)"
-    [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
-
-    awk -v t="$value" 'BEGIN { printf "%d", t * 1000 }'
-}
-
 wait_for_playback_start() {
-    local attempt pos
-
-    for ((attempt = 0; attempt < 100; attempt++)); do
-        if [[ -S "$MPV_SOCKET" ]]; then
-            pos="$(get_time_pos_ms || true)"
-            [[ "$pos" =~ ^[0-9]+$ ]] && return 0
-        fi
-
-        kill -0 "$MPV_PID" 2>/dev/null || return 1
-        sleep 0.1
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        read_player_info && return 0
+        sleep 0.10
     done
-
     return 1
 }
 
@@ -496,69 +448,60 @@ subtitle_loop() {
 }
 
 cleanup() {
-    if [[ -n "$LYRIC_PID" ]] && kill -0 "$LYRIC_PID" 2>/dev/null; then
-        kill "$LYRIC_PID" 2>/dev/null || true
-    fi
-
-    if [[ -n "$MPV_PID" ]] && kill -0 "$MPV_PID" 2>/dev/null; then
-        kill "$MPV_PID" 2>/dev/null || true
-    fi
-
-    [[ -n "$RUNTIME_DIR" ]] && rm -rf "$RUNTIME_DIR"
+    termux-media-player stop >/dev/null 2>&1 || true
 }
 
 main() {
     load_config
     parse_args "$@"
     check_dependencies
-
-    mkdir -p "$CONFIG_DIR" "$CACHE_DIR" "$RUNTIME_BASE"
-
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        cat > "$CONFIG_FILE" <<'EOF'
-# Subtitle timing adjustment in milliseconds.
-# Positive values delay subtitles.
-# Negative values make subtitles appear earlier.
-SUBTITLE_OFFSET_MS=0
-
-# Poll interval for mpv playback position.
-POLL_INTERVAL=0.20
-
-# Maximum seconds for an LRCLIB request.
-LRCLIB_TIMEOUT=15
-EOF
-    fi
-
-    load_config
-
-    RUNTIME_DIR="$(mktemp -d "$RUNTIME_BASE/session.XXXXXX")"
-    MPV_SOCKET="$RUNTIME_DIR/mpv.sock"
-
-    trap cleanup EXIT INT TERM
-
-    start_player_paused
-
-    wait_for_media_metadata || {
-        wait "$MPV_PID" || true
-        die "mpv could not load the music file."
-    }
-
-    finalize_metadata
+    read_metadata
     prepare_lyrics
     parse_lrc
-    load_lyrics
 
-    start_playback || {
-        wait "$MPV_PID" || true
-        die "mpv could not start playback."
-    }
+    termux-media-player play "$MUSIC_FILE" >/dev/null 2>&1 ||
+        die "termux-media-player could not start playback."
 
-    print_metadata
+    local metadata_printed=0
+    local effective_ms lyric_index delta i
 
-    subtitle_loop &
-    LYRIC_PID=$!
+    while :; do
+        if ! read_player_info; then
+            break
+        fi
 
-    wait "$MPV_PID"
+        if [[ "$PLAYER_STATUS" == "Playing" ]]; then
+            if ((metadata_printed == 0)); then
+                print_metadata
+                metadata_printed=1
+            fi
+
+            effective_ms=$((PLAYER_POSITION_MS - SUBTITLE_OFFSET_MS))
+            lyric_index="$(find_lyric_index "$effective_ms")"
+
+            if ((LAST_POSITION_MS >= 0 &&
+                 PLAYER_POSITION_MS + 500 < LAST_POSITION_MS)); then
+                CURRENT_INDEX=$((lyric_index - 1))
+            fi
+
+            delta=$((lyric_index - CURRENT_INDEX))
+
+            if ((lyric_index >= 0 && delta > 0)); then
+                if ((delta > 5)); then
+                    echo "lyrics skipped to index $lyric_index"
+                else
+                    for ((i=CURRENT_INDEX + 1; i<=lyric_index; i++)); do
+                        echo "\${LYRIC_TEXTS[i]}"
+                    done
+                fi
+                CURRENT_INDEX="$lyric_index"
+            fi
+
+            LAST_POSITION_MS="$PLAYER_POSITION_MS"
+        fi
+
+        sleep "$POLL_INTERVAL"
+    done
 }
 
 main "$@"
