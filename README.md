@@ -42,18 +42,33 @@ bash setup.sh --install-deps
 
 The project intentionally does not install mpv or ffmpeg.
 
+Setup also adds a small alias block to `~/.bashrc`:
+
+~~~bash
+alias music='termux-music-player'
+alias mclone='music-clone'
+~~~
+
+Reload the shell after installation:
+
+~~~bash
+source ~/.bashrc
+~~~
+
 ## Usage
 
 Play a local file:
 
 ~~~bash
-termux-music-player ~/Music/song.mp3
+music ~/Music/song.mp3
 ~~~
+
+The full command `termux-music-player` still works.
 
 Override subtitle timing for one run:
 
 ~~~bash
-termux-music-player ~/Music/song.mp3 --offset -300
+music ~/Music/song.mp3 --offset -300
 ~~~
 
 Positive offsets delay subtitles. Negative offsets make them appear earlier.
@@ -143,10 +158,9 @@ This is still an experimental MVP.
 
 The point is to keep the experiment small enough that the dependency graph does not become larger than the music player itself.
 
-
 ## Music cloner
 
-music-clone copies only known music formats from the Android Downloads directory into a normal Termux music directory.
+`music-clone` copies only known music formats from the Android Downloads directory into a normal Termux music directory.
 
 Default source detection checks:
 
@@ -188,14 +202,8 @@ music-clone --source ~/storage/download --dest ~/Music
 
 Non-music files are ignored. Existing files are left alone unless the source file is newer.
 
-The setup script installs the music-clone command and adds this alias to ~/.bashrc:
+The setup script installs the `music-clone` command and adds the `mclone` alias to `~/.bashrc`.
 
 ~~~bash
 alias mclone='music-clone'
-~~~
-
-Reload the shell after installation:
-
-~~~bash
-source ~/.bashrc
 ~~~
