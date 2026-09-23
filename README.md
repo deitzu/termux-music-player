@@ -47,6 +47,7 @@ Setup also adds a small alias block to `~/.bashrc`:
 ~~~bash
 alias music='termux-music-player'
 alias mclone='music-clone'
+alias mwatch='music-clone --watch'
 ~~~
 
 Reload the shell after installation:
@@ -107,11 +108,13 @@ local music
 
 termux-media-player info provides playback status and a Current Position value containing the current and total duration. That position is used as the timing source instead of an independent sleep timer.
 
-The metadata reader currently supports ID3v1 and a filename convention such as:
+The metadata reader currently prefers a filename convention such as:
 
 ~~~text
 Artist - Title.mp3
 ~~~
+
+It also reads ID3v1 when useful. ID3v1 only has 30-byte title, artist, and album fields, so a full 30-byte value is treated as potentially truncated instead of being displayed as if it were complete.
 
 ID3v2 support is intentionally left for a later parser pass rather than pulling in a large metadata dependency.
 
@@ -119,7 +122,7 @@ ID3v2 support is intentionally left for a later parser pass rather than pulling 
 
 The lyric lookup uses GET /api/get first with track, artist, and album metadata.
 
-When that does not return synchronized lyrics, it retries without the album and then falls back to GET /api/search. The first result containing synced lyrics is used.
+When that does not return synchronized lyrics, it retries without the album and then searches LRCLIB with several artist/title query shapes. The first result containing synced lyrics is used.
 
 Only syncedLyrics is cached because this project is specifically experimenting with timestamped terminal subtitles.
 
@@ -186,6 +189,12 @@ Watch mode keeps scanning for new or updated music files:
 
 ~~~bash
 mclone --watch
+~~~
+
+Or use the dedicated alias:
+
+~~~bash
+mwatch
 ~~~
 
 Change the watch interval:
