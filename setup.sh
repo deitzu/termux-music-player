@@ -40,28 +40,31 @@ if [[ -z "$PREFIX" || "$PREFIX" != /data/data/com.termux/files/usr ]]; then
 fi
 
 if ((install_deps)); then
-    echo "Installing runtime dependencies..."
-    echo "Stock Termux mpv currently depends on ffmpeg and a large media stack."
-    apt clean || true
-    pkg install -y mpv curl jq socat
-    apt clean || true
-else
-    echo "Checking runtime dependencies..."
-    missing=""
-    for command in mpv curl jq socat; do
-        if ! command -v "$command" >/dev/null 2>&1; then
-            missing="$missing $command"
-        fi
-    done
+    echo "Installing lightweight runtime dependencies..."
+    pkg install -y curl jq coreutils
 
-    if [[ -n "$missing" ]]; then
-        echo "Missing:$missing"
-        echo "Run: bash setup.sh --install-deps"
+    if ! command -v termux-media-player >/dev/null 2>&1; then
         echo
-        echo "The player script does not call ffprobe or ffmpeg."
-        echo "Stock Termux mpv may still install ffmpeg transitively."
+        echo "termux-media-player is not available in this shell."
+        echo "On F-Droid/GitHub Termux, install the Termux:API add-on and the termux-api package."
+        echo "On recent Google Play Termux builds, termux-media-player is built in."
         exit 1
     fi
+else
+    echo "Checking runtime dependencies..."
+fi
+
+missing=""
+for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        missing="$missing $command"
+    fi
+done
+
+if [[ -n "$missing" ]]; then
+    echo "Missing:$missing"
+    echo "Run: bash setup.sh --install-deps"
+    exit 1
 fi
 
 mkdir -p "$CONFIG_DIR"
@@ -73,7 +76,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Negative values make subtitles appear earlier.
 SUBTITLE_OFFSET_MS=0
 
-# Poll interval for mpv playback position.
+# Poll interval for termux-media-player playback position.
 POLL_INTERVAL=0.20
 
 # Maximum seconds for an LRCLIB request.
