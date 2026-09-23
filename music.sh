@@ -139,14 +139,32 @@ trim_text() {
 
 parse_id3v1() {
     local size start tag
+
     size="$(wc -c < "$MUSIC_FILE")"
     ((size >= 128)) || return 0
+
     start=$((size - 128))
-    tag="$(dd if="$MUSIC_FILE" bs=1 skip="$start" count=128 2>/dev/null)"
-    [[ "$(printf '%s' "$tag" | dd bs=1 count=3 2>/dev/null)" == "TAG" ]] || return 0
-    [[ -n "$TITLE" ]] || TITLE="$(printf '%s' "$tag" | dd bs=1 skip=3 count=30 2>/dev/null | tr -d '\000' | trim_text)"
-    [[ -n "$ARTIST" ]] || ARTIST="$(printf '%s' "$tag" | dd bs=1 skip=33 count=30 2>/dev/null | tr -d '\000' | trim_text)"
-    [[ -n "$ALBUM" ]] || ALBUM="$(printf '%s' "$tag" | dd bs=1 skip=63 count=30 2>/dev/null | tr -d '\000' | trim_text)"
+
+    tag="$(dd if="$MUSIC_FILE" bs=1 skip="$start" count=3 2>/dev/null)"
+    [[ "$tag" == "TAG" ]] || return 0
+
+    [[ -n "$TITLE" ]] || TITLE="$(
+        dd if="$MUSIC_FILE" bs=1 skip=$((start + 3)) count=30 2>/dev/null |
+            tr -d '\000' |
+            trim_text
+    )"
+
+    [[ -n "$ARTIST" ]] || ARTIST="$(
+        dd if="$MUSIC_FILE" bs=1 skip=$((start + 33)) count=30 2>/dev/null |
+            tr -d '\000' |
+            trim_text
+    )"
+
+    [[ -n "$ALBUM" ]] || ALBUM="$(
+        dd if="$MUSIC_FILE" bs=1 skip=$((start + 63)) count=30 2>/dev/null |
+            tr -d '\000' |
+            trim_text
+    )"
 }
 
 read_metadata() {
@@ -247,7 +265,7 @@ fetch_lyrics() {
             --data-urlencode "track_name=$TITLE" \
             --data-urlencode "artist_name=$ARTIST" \
             --data-urlencode "album_name=$ALBUM" \
-            "$LRCLIB_GET" 2>/dev/null || true
+            $LRCLIB_API 2>/dev/null || true
     )"
 
     synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
@@ -263,7 +281,7 @@ fetch_lyrics() {
         curl_json \
             --data-urlencode "track_name=$TITLE" \
             --data-urlencode "artist_name=$ARTIST" \
-            "$LRCLIB_GET" 2>/dev/null || true
+            $LRCLIB_API 2>/dev/null || true
     )"
 
     synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
