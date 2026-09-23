@@ -242,74 +242,58 @@ curl_lrclib() {
 }
 
 fetch_lyrics() {
-    local response_file status synced instrumental tmp_cache
+    local json synced
 
-    [[ "$ARTIST" != "Unknown Artist" ]] || return 1
-
-    response_file="$(mktemp)"
-
-    if [[ "$ALBUM" != "Unknown Album" &&
-          "$DURATION_LOOKUP" -gt 0 &&
-          "$DURATION_LOOKUP" -le 3600 ]]; then
-        if ! status="$(curl_lrclib \
+    json="$(
+        curl_json \
+            --data-urlencode "track_name=$TITLE" \
+            --data-urlencode "artist_name=$ARTIST" \
             --data-urlencode "album_name=$ALBUM" \
-            --data-urlencode "duration=$DURATION_LOOKUP" \
-            --output "$response_file" \
-            --write-out '%{http_code}'
-        )"; then
-            rm -f "$response_file"
-            return 1
-        fi
-    elif [[ "$ALBUM" != "Unknown Album" ]]; then
-        if ! status="$(curl_lrclib \
-            --data-urlencode "album_name=$ALBUM" \
-            --output "$response_file" \
-            --write-out '%{http_code}'
-        )"; then
-            rm -f "$response_file"
-            return 1
-        fi
-    elif [[ "$DURATION_LOOKUP" -gt 0 && "$DURATION_LOOKUP" -le 3600 ]]; then
-        if ! status="$(curl_lrclib \
-            --data-urlencode "duration=$DURATION_LOOKUP" \
-            --output "$response_file" \
-            --write-out '%{http_code}'
-        )"; then
-            rm -f "$response_file"
-            return 1
-        fi
-    else
-        if ! status="$(curl_lrclib \
-            --output "$response_file" \
-            --write-out '%{http_code}'
-        )"; then
-            rm -f "$response_file"
-            return 1
-        fi
-    fi
+            "$LRCLIB_GET" 2>/dev/null || true
+    )"
 
-    [[ "$status" == "200" ]] || {
-        rm -f "$response_file"
-        return 1
+    synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
+    [[ -n "$synced" ]] && {
+        mkdir -p "$CACHE_DIR"
+        printf '%s\n' "$synced" > "$CACHE_FILE"
+        LYRICS_FILE="$CACHE_FILE"
+        return 0
     }
 
-    synced="$(jq -r '.syncedLyrics // ""' "$response_file")"
-    instrumental="$(jq -r '.instrumental // false' "$response_file")"
-    rm -f "$response_file"
+    json="$(
+        curl_json \
+            --data-urlencode "track_name=$TITLE" \
+            --data-urlencode "artist_name=$ARTIST" \
+            "$LRCLIB_GET" 2>/dev/null || true
+    )"
+
+    synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
+    [[ -n "$synced" ]] && {
+        mkdir -p "$CACHE_DIR"
+        printf '%s\n' "$synced" > "$CACHE_FILE"
+        LYRICS_FILE="$CACHE_FILE"
+        return 0
+    }
+
+    json="$(
+        curl_json \
+            --data-urlencode "track_name=$TITLE" \
+            --data-urlencode "artist_name=$ARTIST" \
+            --data-urlencode "q=$TITLE" \
+            "$LRCLIB_SEARCH" 2>/dev/null || true
+    )"
+
+    synced="$(
+        printf '%s' "$json" |
+            jq -r '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")][0].syncedLyrics // ""' 2>/dev/null || true
+    )"
+
+    [[ -n "$synced" ]] || return 1
 
     mkdir -p "$CACHE_DIR"
-    tmp_cache="$(mktemp "$CACHE_DIR/.tmp.XXXXXX")"
-
-    if [[ "$instrumental" == "true" || -z "$synced" ]]; then
-        printf '%s\n' '# termux-music-player: no-synced-lyrics' > "$tmp_cache"
-    else
-        printf '%s\n' "$synced" > "$tmp_cache"
-    fi
-
-    mv -f "$tmp_cache" "$CACHE_FILE"
+    printf '%s\n' "$synced" > "$CACHE_FILE"
     LYRICS_FILE="$CACHE_FILE"
 }
-
 prepare_lyrics() {
     if find_cached_lyrics; then
         echo "Lyrics: cache"
@@ -377,6 +361,11 @@ wait_for_playback_start() {
         sleep 0.10
     done
     return 1
+}
+
+print_lyric_index() {
+    local index="$1"
+    eval "printf '%s\n' \"\${LYRIC_TEXTS[$index]}\""
 }
 
 print_metadata() {
@@ -488,12 +477,13 @@ main() {
 
             if ((lyric_index >= 0 && delta > 0)); then
                 if ((delta > 5)); then
-                    echo "lyrics skipped to index $lyric_index"
+                    print_lyric_index "$lyric_index"
                 else
                     for ((i=CURRENT_INDEX + 1; i<=lyric_index; i++)); do
-                        echo "\${LYRIC_TEXTS[i]}"
+                        print_lyric_index "$i"
                     done
                 fi
+
                 CURRENT_INDEX="$lyric_index"
             fi
 
