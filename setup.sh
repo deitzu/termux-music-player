@@ -2,9 +2,11 @@
 set -e
 
 APP_NAME="termux-music-player"
+CLONER_NAME="music-clone"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CONFIG_FILE="$CONFIG_DIR/config"
+BASHRC="$HOME/.bashrc"
 
 usage() {
     cat <<'EOF'
@@ -40,22 +42,14 @@ if [[ -z "$PREFIX" || "$PREFIX" != /data/data/com.termux/files/usr ]]; then
 fi
 
 if ((install_deps)); then
-    echo "Installing lightweight runtime dependencies..."
+    echo "Installing lightweight dependencies..."
     pkg install -y curl jq coreutils
-
-    if ! command -v termux-media-player >/dev/null 2>&1; then
-        echo
-        echo "termux-media-player is not available in this shell."
-        echo "On F-Droid/GitHub Termux, install the Termux:API add-on and the termux-api package."
-        echo "On recent Google Play Termux builds, termux-media-player is built in."
-        exit 1
-    fi
 else
-    echo "Checking runtime dependencies..."
+    echo "Checking dependencies..."
 fi
 
 missing=""
-for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp; do
+for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp find tr cp mkdir dirname; do
     if ! command -v "$command" >/dev/null 2>&1; then
         missing="$missing $command"
     fi
@@ -64,6 +58,14 @@ done
 if [[ -n "$missing" ]]; then
     echo "Missing:$missing"
     echo "Run: bash setup.sh --install-deps"
+    exit 1
+fi
+
+if ! command -v termux-media-player >/dev/null 2>&1; then
+    echo
+    echo "termux-media-player is unavailable."
+    echo "On non-Play Termux builds, install the Termux:API integration."
+    echo "On recent Google Play Termux builds, it should be available in Termux."
     exit 1
 fi
 
@@ -86,9 +88,30 @@ EOF
 fi
 
 cp "$SCRIPT_DIR/music.sh" "$PREFIX/bin/$APP_NAME"
-chmod 755 "$PREFIX/bin/$APP_NAME"
+cp "$SCRIPT_DIR/music-clone" "$PREFIX/bin/$CLONER_NAME"
+chmod 755 "$PREFIX/bin/$APP_NAME" "$PREFIX/bin/$CLONER_NAME"
+
+touch "$BASHRC"
+
+if ! grep -Fqx "# termux-music-player aliases" "$BASHRC"; then
+    {
+        echo
+        echo "# termux-music-player aliases"
+        echo "alias mclone='music-clone'"
+        echo "# end termux-music-player aliases"
+    } >> "$BASHRC"
+    echo "Added alias: mclone"
+else
+    echo "Alias block already exists."
+fi
 
 echo
-echo "Installed: $PREFIX/bin/$APP_NAME"
-echo "Run:"
-echo "  $APP_NAME ~/Music/song.mp3"
+echo "Installed:"
+echo "  $PREFIX/bin/$APP_NAME"
+echo "  $PREFIX/bin/$CLONER_NAME"
+echo
+echo "Manual clone:  mclone"
+echo "Watch mode:    mclone --watch"
+echo
+echo "Reload Bash after setup with:"
+echo "  source ~/.bashrc"
