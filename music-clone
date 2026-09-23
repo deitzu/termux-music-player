@@ -99,7 +99,7 @@ resolve_source() {
 
 is_music_file() {
     local ext
-    ext="$(printf '%s' "\${1##*.}" | tr '[:upper:]' '[:lower:]')"
+    ext="$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')"
 
     case "$ext" in
         mp3|flac|wav|m4a|aac|ogg|oga|opus|wma|alac|aiff|aif|ape)
@@ -115,7 +115,7 @@ copy_one() {
     local source="$1"
     local relative target
 
-    relative="\${source#"$SOURCE_DIR"/}"
+    relative="${source#"$SOURCE_DIR"/}"
     target="$DEST_DIR/$relative"
 
     mkdir -p "$(dirname "$target")"
@@ -159,7 +159,7 @@ main() {
         return 0
     fi
 
-    echo "Watch mode: every \${POLL_INTERVAL}s. Press Ctrl-C to stop."
+    echo "Watch mode: every ${POLL_INTERVAL}s. Press Ctrl-C to stop."
 
     while :; do
         scan_once
