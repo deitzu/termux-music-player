@@ -169,28 +169,34 @@ parse_id3v1() {
 
 read_metadata() {
     local base artist_guess title_guess
+
     TITLE=""
     ARTIST=""
     ALBUM=""
-    parse_id3v1
 
     base="$(basename "$MUSIC_FILE")"
     base="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//')"
 
+    # Prefer a descriptive filename when it follows "Artist - Title".
+    # ID3v1 fields are limited to 30 bytes and may silently truncate long titles.
     if [[ "$base" == *" - "* ]]; then
-        artist_guess="$(printf '%s\n' "$base" | sed 's/ - .*//')"
-        title_guess="$(printf '%s\n' "$base" | sed 's/^[^ -]* - //')"
-        [[ -n "$ARTIST" ]] || ARTIST="$artist_guess"
-        [[ -n "$TITLE" ]] || TITLE="$title_guess"
-    else
-        [[ -n "$TITLE" ]] || TITLE="$base"
+        artist_guess="${base%% - *}"
+        title_guess="${base#* - }"
+        ARTIST="$artist_guess"
+        TITLE="$title_guess"
+    fi
+
+    # Use ID3v1 for the album, or as a fallback when the filename has no split.
+    parse_id3v1
+
+    if [[ -z "$TITLE" ]]; then
+        TITLE="$base"
     fi
 
     [[ -n "$TITLE" ]] || TITLE="Unknown Title"
     [[ -n "$ARTIST" ]] || ARTIST="Unknown Artist"
     [[ -n "$ALBUM" ]] || ALBUM="Unknown Album"
 }
-
 time_to_ms() {
     local value="$1"
     local first second third
