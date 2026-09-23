@@ -49,7 +49,7 @@ else
 fi
 
 missing=""
-for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp find tr cp mkdir dirname; do
+for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp find tr cp mkdir dirname grep; do
     if ! command -v "$command" >/dev/null 2>&1; then
         missing="$missing $command"
     fi
