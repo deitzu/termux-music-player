@@ -5,9 +5,9 @@
 # Negative values make subtitles appear earlier.
 SUBTITLE_OFFSET_MS=0
 
-# How often to poll mpv for its playback position.
-# Smaller values give tighter sync but use more CPU.
-POLL_INTERVAL=0.10
+# Poll interval for mpv playback position.
+# Smaller values improve timing but use more CPU.
+POLL_INTERVAL=0.20
 
-# Maximum time in seconds for an LRCLIB request.
+# Maximum seconds for an LRCLIB request.
 LRCLIB_TIMEOUT=15
