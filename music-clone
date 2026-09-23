@@ -1,0 +1,170 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+DEST_DIR="$HOME/Music"
+SOURCE_DIR=""
+WATCH_MODE=0
+POLL_INTERVAL=5
+
+usage() {
+    cat <<'EOF'
+Usage:
+  music-clone
+  music-clone --watch
+  music-clone --watch --interval 10
+  music-clone --source DIR --dest DIR
+
+Options:
+  --watch             Keep scanning for music files.
+  --interval SEC      Watch interval. Default: 5.
+  --source DIR        Override the source Downloads directory.
+  --dest DIR          Override the destination. Default: ~/Music.
+  -h, --help          Show this help.
+
+Supported formats:
+  mp3 flac wav m4a aac ogg oga opus wma alac aiff aif ape
+EOF
+}
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --watch)
+                WATCH_MODE=1
+                shift
+                ;;
+            --interval)
+                (($# >= 2)) || die "--interval needs a value"
+                POLL_INTERVAL="$2"
+                shift 2
+                ;;
+            --interval=*)
+                POLL_INTERVAL="$(printf '%s\n' "$1" | sed 's/^--interval=//')"
+                shift
+                ;;
+            --source)
+                (($# >= 2)) || die "--source needs a directory"
+                SOURCE_DIR="$2"
+                shift 2
+                ;;
+            --source=*)
+                SOURCE_DIR="$(printf '%s\n' "$1" | sed 's/^--source=//')"
+                shift
+                ;;
+            --dest)
+                (($# >= 2)) || die "--dest needs a directory"
+                DEST_DIR="$2"
+                shift 2
+                ;;
+            --dest=*)
+                DEST_DIR="$(printf '%s\n' "$1" | sed 's/^--dest=//')"
+                shift
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    [[ "$POLL_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+        die "Interval must be a number"
+}
+
+resolve_source() {
+    if [[ -n "$SOURCE_DIR" ]]; then
+        [[ -d "$SOURCE_DIR" ]] ||
+            die "Source directory does not exist: $SOURCE_DIR"
+        return
+    fi
+
+    if [[ -d "/storage/download" ]]; then
+        SOURCE_DIR="/storage/download"
+    elif [[ -d "$HOME/storage/download" ]]; then
+        SOURCE_DIR="$HOME/storage/download"
+    elif [[ -d "$HOME/storage/downloads" ]]; then
+        SOURCE_DIR="$HOME/storage/downloads"
+    else
+        die "Downloads directory not found. Run termux-setup-storage or use --source DIR."
+    fi
+}
+
+is_music_file() {
+    local ext
+    ext="$(printf '%s' "\${1##*.}" | tr '[:upper:]' '[:lower:]')"
+
+    case "$ext" in
+        mp3|flac|wav|m4a|aac|ogg|oga|opus|wma|alac|aiff|aif|ape)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+copy_one() {
+    local source="$1"
+    local relative target
+
+    relative="\${source#"$SOURCE_DIR"/}"
+    target="$DEST_DIR/$relative"
+
+    mkdir -p "$(dirname "$target")"
+
+    if [[ -e "$target" ]]; then
+        if [[ "$source" -nt "$target" ]]; then
+            cp -f -- "$source" "$target"
+            echo "Updated: $relative"
+        fi
+        return
+    fi
+
+    cp -- "$source" "$target"
+    echo "Copied: $relative"
+}
+
+scan_once() {
+    local checked=0
+    local file
+
+    while IFS= read -r -d '' file; do
+        if is_music_file "$file"; then
+            copy_one "$file"
+            checked=$((checked + 1))
+        fi
+    done < <(find "$SOURCE_DIR" -type f -print0)
+
+    echo "Scan complete: $checked music file(s) checked."
+}
+
+main() {
+    parse_args "$@"
+    resolve_source
+    mkdir -p "$DEST_DIR"
+
+    echo "Source: $SOURCE_DIR"
+    echo "Dest  : $DEST_DIR"
+
+    if ((WATCH_MODE == 0)); then
+        scan_once
+        return 0
+    fi
+
+    echo "Watch mode: every \${POLL_INTERVAL}s. Press Ctrl-C to stop."
+
+    while :; do
+        scan_once
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+main "$@"
