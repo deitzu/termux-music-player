@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 APP_NAME="termux-music-player"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CACHE_DIR="$HOME/.cache/$APP_NAME/lyrics"
@@ -193,6 +193,12 @@ read_ascii_at() {
     dd if="$MUSIC_FILE" bs=1 skip="$offset" count="$count" 2>/dev/null
 }
 
+read_text_at() {
+    local offset="$1" count="$2"
+    read_ascii_at "$offset" "$count" |
+        tr -d '\000'
+}
+
 set_metadata_field() {
     local variable="$1" value="$2"
     [[ -n "$value" ]] || return 0
@@ -216,13 +222,27 @@ decode_id3_text() {
             if command -v iconv >/dev/null 2>&1; then
                 read_ascii_at "$offset" "$size" | iconv -f UTF-16 -t UTF-8 2>/dev/null | trim_text
             else
+                local bom
+                bom="$(read_hex_at "$offset" 2)"
+                if [[ "$bom" == "fffe" || "$bom" == "feff" ]]; then
+                    offset=$((offset + 2))
+                    size=$((size - 2))
+                fi
+                ((size > 0)) || return 0
                 read_ascii_at "$offset" "$size" | tr -d '\000' | trim_text
             fi
             ;;
         2)
             if command -v iconv >/dev/null 2>&1; then
-                read_ascii_at "$offset" "$size" | iconv -f UTF-16BE -t UTF-8 2>/dev/null | trim_text
+                read_ascii_at "$offset" "$size" | iconv -f UTF-16 -t UTF-8 2>/dev/null | trim_text
             else
+                local bom
+                bom="$(read_hex_at "$offset" 2)"
+                if [[ "$bom" == "fffe" || "$bom" == "feff" ]]; then
+                    offset=$((offset + 2))
+                    size=$((size - 2))
+                fi
+                ((size > 0)) || return 0
                 read_ascii_at "$offset" "$size" | tr -d '\000' | trim_text
             fi
             ;;
@@ -239,8 +259,8 @@ parse_id3v2() {
     local magic version flags tag_size offset end frame_id frame_size
     local ext_size encoding title artist album
 
-    magic="$(read_ascii_at 0 3)"
-    [[ "$magic" == "ID3" ]] || return 0
+    magic="$(read_hex_at 0 3)"
+    [[ "$magic" == "494433" ]] || return 0
 
     version="$(dd if="$MUSIC_FILE" bs=1 skip=3 count=1 2>/dev/null | od -An -tu1)"
     ((version >= 2 && version <= 4)) || return 0
@@ -261,7 +281,7 @@ parse_id3v2() {
 
     if ((version == 2)); then
         while ((offset + 6 <= end)); do
-            frame_id="$(read_ascii_at "$offset" 3)"
+            frame_id="$(read_text_at "$offset" 3)"
             [[ -n "$frame_id" && "$frame_id" != $'\000\000\000' ]] || break
             frame_size="$(read_u24be_at "$((offset + 3))")" || break
             ((frame_size > 0 && offset + 6 + frame_size <= end)) || break
@@ -282,7 +302,7 @@ parse_id3v2() {
     fi
 
     while ((offset + 10 <= end)); do
-        frame_id="$(read_ascii_at "$offset" 4)"
+        frame_id="$(read_text_at "$offset" 4)"
         [[ -n "$frame_id" && "$frame_id" != $'\000\000\000\000' ]] || break
 
         if ((version == 3)); then
@@ -310,8 +330,8 @@ parse_flac_vorbis_comments() {
     local magic offset header first block_type last block_size
     local vendor_len comment_count comment_len comment key value
 
-    magic="$(read_ascii_at 0 4)"
-    [[ "$magic" == "fLaC" ]] || return 0
+    magic="$(read_hex_at 0 4)"
+    [[ "$magic" == "664c6143" ]] || return 0
 
     offset=4
     while ((offset + 4 <= MUSIC_SIZE)); do
@@ -357,11 +377,11 @@ parse_flac_vorbis_comments() {
 parse_ogg_comments() {
     local container key match offset comment_len comment field_key field_value
 
-    container="$(read_ascii_at 0 4)"
-    [[ "$container" == "OggS" ]] || return 0
+    container="$(read_hex_at 0 4)"
+    [[ "$container" == "4f676753" ]] || return 0
 
     for key in TITLE ARTIST ALBUM; do
-        match="$(LC_ALL=C grep -aobm1 -- "$key=" "$MUSIC_FILE" 2>/dev/null || true)"
+        match="$(LC_ALL=C grep -aobm1 -- "$key=" "$MUSIC_FILE" 2>/dev/null | cut -d: -f1 || true)"
         [[ "$match" == *:* ]] || continue
         offset="${match%%:*}"
         [[ "$offset" =~ ^[0-9]+$ && offset -ge 4 ]] || continue
@@ -433,20 +453,20 @@ parse_mp4_atoms() {
 }
 
 parse_mp4_metadata() {
-    [[ "$(read_ascii_at 4 4)" == "ftyp" ]] || return 0
+    [[ "$(read_hex_at 4 4)" == "66747970" ]] || return 0
     parse_mp4_atoms 0 "$MUSIC_SIZE" "" 0
 }
 
 parse_riff_info() {
     local magic form offset chunk_id chunk_size chunk_end list_type sub_offset sub_id sub_size value
 
-    [[ "$(read_ascii_at 0 4)" == "RIFF" ]] || return 0
-    form="$(read_ascii_at 8 4)"
+    [[ "$(read_hex_at 0 4)" == "52494646" ]] || return 0
+    form="$(read_text_at 8 4)"
     [[ "$form" == "WAVE" ]] || return 0
 
     offset=12
     while ((offset + 8 <= MUSIC_SIZE)); do
-        chunk_id="$(read_ascii_at "$offset" 4)"
+        chunk_id="$(read_text_at "$offset" 4)"
         chunk_size="$(read_u32le_at "$((offset + 4))" 2>/dev/null || true)"
         [[ "$chunk_size" =~ ^[0-9]+$ ]] || break
         chunk_end=$((offset + 8 + chunk_size))
@@ -457,7 +477,7 @@ parse_riff_info() {
             if [[ "$list_type" == "INFO" ]]; then
                 sub_offset=$((offset + 12))
                 while ((sub_offset + 8 <= chunk_end)); do
-                    sub_id="$(read_ascii_at "$sub_offset" 4)"
+                    sub_id="$(read_text_at "$sub_offset" 4)"
                     sub_size="$(read_u32le_at "$((sub_offset + 4))" 2>/dev/null || true)"
                     [[ "$sub_size" =~ ^[0-9]+$ ]] || break
                     ((sub_offset + 8 + sub_size <= chunk_end)) || break
