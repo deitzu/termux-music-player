@@ -1,0 +1,10 @@
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local test files
+*.log
+.DS_Store
