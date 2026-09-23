@@ -203,14 +203,14 @@ decode_id3_text() {
     local offset="$1" size="$2" encoding
     ((size > 0)) || return 0
 
-    encoding="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=1 2>/dev/null | od -An -tu1)"
+    encoding="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=1 2>/dev/null | od -An -tu1 | tr -d '[:space:]')"
     offset=$((offset + 1))
     size=$((size - 1))
     ((size > 0)) || return 0
 
     case "$encoding" in
         0)
-            read_ascii_at "$offset" "$size" | trim_text
+            read_ascii_at "$offset" "$size" | tr -d '\000' | trim_text
             ;;
         1)
             if command -v iconv >/dev/null 2>&1; then
@@ -248,6 +248,7 @@ parse_id3v2() {
     tag_size="$(read_u32synchsafe_at 6)" || return 0
     offset=10
     end=$((10 + tag_size))
+    ((end <= MUSIC_SIZE)) || return 0
 
     if ((flags & 64)); then
         if ((version == 3)); then
@@ -354,12 +355,10 @@ parse_flac_vorbis_comments() {
 }
 
 parse_ogg_comments() {
-    local magic key match offset comment_len comment field_key field_value
-    for magic in "OggS" "Opus"; do
-        [[ "$(read_ascii_at 0 4)" == "$magic" ]] || continue
-        break
-    done
-    [[ "$magic" == "OggS" || "$magic" == "Opus" ]] || return 0
+    local container key match offset comment_len comment field_key field_value
+
+    container="$(read_ascii_at 0 4)"
+    [[ "$container" == "OggS" ]] || return 0
 
     for key in TITLE ARTIST ALBUM; do
         match="$(LC_ALL=C grep -aobm1 -- "$key=" "$MUSIC_FILE" 2>/dev/null || true)"
@@ -368,7 +367,7 @@ parse_ogg_comments() {
         [[ "$offset" =~ ^[0-9]+$ && offset -ge 4 ]] || continue
         comment_len="$(read_u32le_at "$((offset - 4))" 2>/dev/null || true)"
         [[ "$comment_len" =~ ^[0-9]+$ ]] || continue
-        ((comment_len >= ${#key} + 1 && comment_len <= 1048576)) || continue
+        ((comment_len >= 6 && comment_len <= 1048576)) || continue
         ((offset + comment_len <= MUSIC_SIZE)) || continue
         comment="$(read_ascii_at "$offset" "$comment_len")"
         field_key="${comment%%=*}"
