@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.5.2"
 APP_NAME="termux-music-player"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CACHE_DIR="$HOME/.cache/$APP_NAME/lyrics"
@@ -779,9 +779,8 @@ find_lyric_index() {
 
 print_lyric_index() {
     local index="$1"
-    eval "printf '%s\n' \"\${LYRIC_TEXTS[$index]}\""
+    printf '%s\n' "${LYRIC_TEXTS[$index]}"
 }
-
 print_metadata() {
     echo
     echo "▶ Playing: $TITLE"
