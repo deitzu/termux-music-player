@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 APP_NAME="termux-music-player"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CACHE_DIR="$HOME/.cache/$APP_NAME/lyrics"
@@ -128,7 +128,7 @@ parse_args() {
 
 check_dependencies() {
     local command
-    for command in termux-media-player curl jq sha256sum awk sed dd cut head wc mktemp; do
+    for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp grep; do
         command -v "$command" >/dev/null 2>&1 || die "Missing dependency: $command"
     done
 }
@@ -137,10 +137,350 @@ trim_text() {
     sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
+read_u32be_at() {
+    local offset="$1" data
+    local -a bytes=()
+    data="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=4 2>/dev/null | od -An -tu1)" || return 1
+    read -r -a bytes <<< "$data"
+    (( ${#bytes[@]} == 4 )) || return 1
+    printf "%d\n" $((bytes[0] * 16777216 + bytes[1] * 65536 + bytes[2] * 256 + bytes[3]))
+}
+
+read_u32le_at() {
+    local offset="$1" data
+    local -a bytes=()
+    data="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=4 2>/dev/null | od -An -tu1)" || return 1
+    read -r -a bytes <<< "$data"
+    (( ${#bytes[@]} == 4 )) || return 1
+    printf "%d\n" $((bytes[0] + bytes[1] * 256 + bytes[2] * 65536 + bytes[3] * 16777216))
+}
+
+read_u32synchsafe_at() {
+    local offset="$1" data
+    local -a bytes=()
+    data="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=4 2>/dev/null | od -An -tu1)" || return 1
+    read -r -a bytes <<< "$data"
+    (( ${#bytes[@]} == 4 )) || return 1
+    printf "%d\n" $(((bytes[0] & 127) * 2097152 + (bytes[1] & 127) * 16384 + (bytes[2] & 127) * 128 + (bytes[3] & 127)))
+}
+
+read_u24be_at() {
+    local offset="$1" data
+    local -a bytes=()
+    data="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=3 2>/dev/null | od -An -tu1)" || return 1
+    read -r -a bytes <<< "$data"
+    (( ${#bytes[@]} == 3 )) || return 1
+    printf "%d\n" $((bytes[0] * 65536 + bytes[1] * 256 + bytes[2]))
+}
+
+read_u64be_at() {
+    local offset="$1"
+    local high low
+    high="$(read_u32be_at "$offset")" || return 1
+    low="$(read_u32be_at "$((offset + 4))")" || return 1
+    printf "%d\n" $((high * 4294967296 + low))
+}
+
+read_hex_at() {
+    local offset="$1" count="$2"
+    dd if="$MUSIC_FILE" bs=1 skip="$offset" count="$count" 2>/dev/null |
+        od -An -tx1 |
+        tr -d ' \n'
+}
+
+read_ascii_at() {
+    local offset="$1" count="$2"
+    dd if="$MUSIC_FILE" bs=1 skip="$offset" count="$count" 2>/dev/null
+}
+
+set_metadata_field() {
+    local variable="$1" value="$2"
+    [[ -n "$value" ]] || return 0
+    [[ -n "${!variable}" ]] || printf -v "$variable" "%s" "$value"
+}
+
+decode_id3_text() {
+    local offset="$1" size="$2" encoding
+    ((size > 0)) || return 0
+
+    encoding="$(dd if="$MUSIC_FILE" bs=1 skip="$offset" count=1 2>/dev/null | od -An -tu1)"
+    offset=$((offset + 1))
+    size=$((size - 1))
+    ((size > 0)) || return 0
+
+    case "$encoding" in
+        0)
+            read_ascii_at "$offset" "$size" | trim_text
+            ;;
+        1)
+            if command -v iconv >/dev/null 2>&1; then
+                read_ascii_at "$offset" "$size" | iconv -f UTF-16 -t UTF-8 2>/dev/null | trim_text
+            else
+                read_ascii_at "$offset" "$size" | tr -d '\000' | trim_text
+            fi
+            ;;
+        2)
+            if command -v iconv >/dev/null 2>&1; then
+                read_ascii_at "$offset" "$size" | iconv -f UTF-16BE -t UTF-8 2>/dev/null | trim_text
+            else
+                read_ascii_at "$offset" "$size" | tr -d '\000' | trim_text
+            fi
+            ;;
+        3)
+            read_ascii_at "$offset" "$size" | trim_text
+            ;;
+        *)
+            read_ascii_at "$offset" "$size" | tr -d '\000' | trim_text
+            ;;
+    esac
+}
+
+parse_id3v2() {
+    local magic version flags tag_size offset end frame_id frame_size
+    local ext_size encoding title artist album
+
+    magic="$(read_ascii_at 0 3)"
+    [[ "$magic" == "ID3" ]] || return 0
+
+    version="$(dd if="$MUSIC_FILE" bs=1 skip=3 count=1 2>/dev/null | od -An -tu1)"
+    ((version >= 2 && version <= 4)) || return 0
+    flags="$(dd if="$MUSIC_FILE" bs=1 skip=5 count=1 2>/dev/null | od -An -tu1)"
+    tag_size="$(read_u32synchsafe_at 6)" || return 0
+    offset=10
+    end=$((10 + tag_size))
+
+    if ((flags & 64)); then
+        if ((version == 3)); then
+            ext_size="$(read_u32be_at "$offset" 2>/dev/null)" || return 0
+        else
+            ext_size="$(read_u32synchsafe_at "$offset" 2>/dev/null)" || return 0
+        fi
+        offset=$((offset + ext_size))
+    fi
+
+    if ((version == 2)); then
+        while ((offset + 6 <= end)); do
+            frame_id="$(read_ascii_at "$offset" 3)"
+            [[ -n "$frame_id" && "$frame_id" != $'\000\000\000' ]] || break
+            frame_size="$(read_u24be_at "$((offset + 3))")" || break
+            ((frame_size > 0 && offset + 6 + frame_size <= end)) || break
+
+            case "$frame_id" in
+                TT2) title="$(decode_id3_text "$((offset + 6))" "$frame_size")" ;;
+                TP1) artist="$(decode_id3_text "$((offset + 6))" "$frame_size")" ;;
+                TAL) album="$(decode_id3_text "$((offset + 6))" "$frame_size")" ;;
+            esac
+
+            set_metadata_field TITLE "${title:-}"
+            set_metadata_field ARTIST "${artist:-}"
+            set_metadata_field ALBUM "${album:-}"
+            title=""; artist=""; album=""
+            offset=$((offset + 6 + frame_size))
+        done
+        return 0
+    fi
+
+    while ((offset + 10 <= end)); do
+        frame_id="$(read_ascii_at "$offset" 4)"
+        [[ -n "$frame_id" && "$frame_id" != $'\000\000\000\000' ]] || break
+
+        if ((version == 3)); then
+            frame_size="$(read_u32be_at "$((offset + 4))")" || break
+        else
+            frame_size="$(read_u32synchsafe_at "$((offset + 4))")" || break
+        fi
+        ((frame_size > 0 && offset + 10 + frame_size <= end)) || break
+
+        case "$frame_id" in
+            TIT2) title="$(decode_id3_text "$((offset + 10))" "$frame_size")" ;;
+            TPE1) artist="$(decode_id3_text "$((offset + 10))" "$frame_size")" ;;
+            TALB) album="$(decode_id3_text "$((offset + 10))" "$frame_size")" ;;
+        esac
+
+        set_metadata_field TITLE "${title:-}"
+        set_metadata_field ARTIST "${artist:-}"
+        set_metadata_field ALBUM "${album:-}"
+        title=""; artist=""; album=""
+        offset=$((offset + 10 + frame_size))
+    done
+}
+
+parse_flac_vorbis_comments() {
+    local magic offset header first block_type last block_size
+    local vendor_len comment_count comment_len comment key value
+
+    magic="$(read_ascii_at 0 4)"
+    [[ "$magic" == "fLaC" ]] || return 0
+
+    offset=4
+    while ((offset + 4 <= MUSIC_SIZE)); do
+        header="$(read_ascii_at "$offset" 4 | od -An -tu1)"
+        read -r first b1 b2 b3 <<< "$header"
+        (( first >= 0 && first <= 255 )) || return 0
+        block_type=$((first & 127))
+        last=$((first & 128))
+        block_size=$((b1 * 65536 + b2 * 256 + b3))
+        ((offset + 4 + block_size <= MUSIC_SIZE)) || return 0
+
+        if ((block_type == 4 && block_size >= 8)); then
+            vendor_len="$(read_u32le_at "$((offset + 4))")" || return 0
+            comment_count_offset=$((offset + 8 + vendor_len))
+            ((comment_count_offset + 4 <= offset + 4 + block_size)) || return 0
+            comment_count="$(read_u32le_at "$comment_count_offset")" || return 0
+            offset=$((comment_count_offset + 4))
+
+            for ((i=0; i<comment_count; i++)); do
+                ((offset + 4 <= MUSIC_SIZE)) || break
+                comment_len="$(read_u32le_at "$offset")" || break
+                offset=$((offset + 4))
+                ((comment_len > 0 && offset + comment_len <= MUSIC_SIZE)) || break
+                comment="$(read_ascii_at "$offset" "$comment_len" | trim_text)"
+                key="${comment%%=*}"
+                value="${comment#*=}"
+                key="${key^^}"
+                case "$key" in
+                    TITLE) set_metadata_field TITLE "$value" ;;
+                    ARTIST) set_metadata_field ARTIST "$value" ;;
+                    ALBUM) set_metadata_field ALBUM "$value" ;;
+                esac
+                offset=$((offset + comment_len))
+            done
+            return 0
+        fi
+
+        offset=$((offset + 4 + block_size))
+        ((last != 0)) && break
+    done
+}
+
+parse_ogg_comments() {
+    local magic key match offset comment_len comment field_key field_value
+    for magic in "OggS" "Opus"; do
+        [[ "$(read_ascii_at 0 4)" == "$magic" ]] || continue
+        break
+    done
+    [[ "$magic" == "OggS" || "$magic" == "Opus" ]] || return 0
+
+    for key in TITLE ARTIST ALBUM; do
+        match="$(LC_ALL=C grep -aobm1 -- "$key=" "$MUSIC_FILE" 2>/dev/null || true)"
+        [[ "$match" == *:* ]] || continue
+        offset="${match%%:*}"
+        [[ "$offset" =~ ^[0-9]+$ && offset -ge 4 ]] || continue
+        comment_len="$(read_u32le_at "$((offset - 4))" 2>/dev/null || true)"
+        [[ "$comment_len" =~ ^[0-9]+$ ]] || continue
+        ((comment_len >= ${#key} + 1 && comment_len <= 1048576)) || continue
+        ((offset + comment_len <= MUSIC_SIZE)) || continue
+        comment="$(read_ascii_at "$offset" "$comment_len")"
+        field_key="${comment%%=*}"
+        field_value="${comment#*=}"
+        field_key="${field_key^^}"
+        case "$field_key" in
+            TITLE) set_metadata_field TITLE "$field_value" ;;
+            ARTIST) set_metadata_field ARTIST "$field_value" ;;
+            ALBUM) set_metadata_field ALBUM "$field_value" ;;
+        esac
+    done
+}
+
+parse_mp4_atoms() {
+    local start="$1" end="$2" parent_type="${3:-}" depth="${4:-0}"
+    local size type_hex atom_end child_start payload_size value
+
+    ((depth <= 8)) || return 0
+
+    while ((start + 8 <= end)); do
+        size="$(read_u32be_at "$start" 2>/dev/null || true)"
+        [[ "$size" =~ ^[0-9]+$ ]] || return 0
+        type_hex="$(read_hex_at "$((start + 4))" 4)"
+
+        if ((size == 1)); then
+            size="$(read_u64be_at "$((start + 8))" 2>/dev/null || true)"
+            [[ "$size" =~ ^[0-9]+$ ]] || return 0
+            child_start=$((start + 16))
+        else
+            child_start=$((start + 8))
+        fi
+
+        if ((size == 0)); then
+            atom_end="$end"
+        else
+            atom_end=$((start + size))
+        fi
+        ((atom_end > start && atom_end <= end)) || return 0
+
+        if [[ "$type_hex" == "64617461" ]]; then
+            if ((size >= 16)); then
+                payload_size=$((size - 16))
+                case "$parent_type" in
+                    c2a96e616d) value="$(read_ascii_at "$((start + 16))" "$payload_size" | tr -d '\000' | trim_text)"; set_metadata_field TITLE "$value" ;;
+                    c2a9415254) value="$(read_ascii_at "$((start + 16))" "$payload_size" | tr -d '\000' | trim_text)"; set_metadata_field ARTIST "$value" ;;
+                    c2a9616c62) value="$(read_ascii_at "$((start + 16))" "$payload_size" | tr -d '\000' | trim_text)"; set_metadata_field ALBUM "$value" ;;
+                    61415254) value="$(read_ascii_at "$((start + 16))" "$payload_size" | tr -d '\000' | trim_text)"; set_metadata_field ARTIST "$value" ;;
+                esac
+            fi
+        fi
+
+        case "$type_hex" in
+            6d6f6f76|75647461|6d657461|696c7374|7472616b|6d646961|6d696e66|64696e66|7374626c|65647473|c2a96e616d|c2a9415254|c2a9616c62|61415254)
+                if [[ "$type_hex" == "6d657461" ]]; then
+                    child_start=$((start + 12))
+                fi
+                parse_mp4_atoms "$child_start" "$atom_end" "$type_hex" "$((depth + 1))"
+                ;;
+        esac
+
+        start="$atom_end"
+    done
+}
+
+parse_mp4_metadata() {
+    [[ "$(read_ascii_at 4 4)" == "ftyp" ]] || return 0
+    parse_mp4_atoms 0 "$MUSIC_SIZE" "" 0
+}
+
+parse_riff_info() {
+    local magic form offset chunk_id chunk_size chunk_end list_type sub_offset sub_id sub_size value
+
+    [[ "$(read_ascii_at 0 4)" == "RIFF" ]] || return 0
+    form="$(read_ascii_at 8 4)"
+    [[ "$form" == "WAVE" ]] || return 0
+
+    offset=12
+    while ((offset + 8 <= MUSIC_SIZE)); do
+        chunk_id="$(read_ascii_at "$offset" 4)"
+        chunk_size="$(read_u32le_at "$((offset + 4))" 2>/dev/null || true)"
+        [[ "$chunk_size" =~ ^[0-9]+$ ]] || break
+        chunk_end=$((offset + 8 + chunk_size))
+        ((chunk_end <= MUSIC_SIZE)) || break
+
+        if [[ "$chunk_id" == "LIST" && chunk_size -ge 4 ]]; then
+            list_type="$(read_ascii_at "$((offset + 8))" 4)"
+            if [[ "$list_type" == "INFO" ]]; then
+                sub_offset=$((offset + 12))
+                while ((sub_offset + 8 <= chunk_end)); do
+                    sub_id="$(read_ascii_at "$sub_offset" 4)"
+                    sub_size="$(read_u32le_at "$((sub_offset + 4))" 2>/dev/null || true)"
+                    [[ "$sub_size" =~ ^[0-9]+$ ]] || break
+                    ((sub_offset + 8 + sub_size <= chunk_end)) || break
+                    value="$(read_ascii_at "$((sub_offset + 8))" "$sub_size" | tr -d '\000' | trim_text)"
+                    case "$sub_id" in
+                        INAM) set_metadata_field TITLE "$value" ;;
+                        IART) set_metadata_field ARTIST "$value" ;;
+                        IPRD) set_metadata_field ALBUM "$value" ;;
+                    esac
+                    sub_offset=$((sub_offset + 8 + sub_size + (sub_size & 1)))
+                done
+            fi
+        fi
+
+        offset=$((offset + 8 + chunk_size + (chunk_size & 1)))
+    done
+}
+
 parse_id3v1() {
     local size start tag value bytes
 
-    size="$(wc -c < "$MUSIC_FILE")"
+    size="$MUSIC_SIZE"
     ((size >= 128)) || return 0
 
     start=$((size - 128))
@@ -187,23 +527,27 @@ read_metadata() {
     TITLE=""
     ARTIST=""
     ALBUM=""
+    MUSIC_SIZE="$(wc -c < "$MUSIC_FILE")"
+
+    # Prefer modern/container-aware metadata parsers, then use older tags
+    # and finally the filename as a fallback.
+    parse_id3v2
+    parse_flac_vorbis_comments
+    parse_ogg_comments
+    parse_mp4_metadata
+    parse_riff_info
+    parse_id3v1
 
     base="$(basename "$MUSIC_FILE")"
     base="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//')"
 
-    # Prefer filename title/artist because ID3v1 can silently truncate
-    # long values at 30 bytes.
     if [[ "$base" == *" - "* ]]; then
         artist_guess="${base%% - *}"
         title_guess="${base#* - }"
-        ARTIST="$artist_guess"
-        TITLE="$title_guess"
-    fi
-
-    parse_id3v1
-
-    if [[ -z "$TITLE" ]]; then
-        TITLE="$base"
+        set_metadata_field ARTIST "$artist_guess"
+        set_metadata_field TITLE "$title_guess"
+    else
+        set_metadata_field TITLE "$base"
     fi
 
     [[ -n "$TITLE" ]] || TITLE="Unknown Title"
