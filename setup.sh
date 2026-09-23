@@ -93,25 +93,29 @@ chmod 755 "$PREFIX/bin/$APP_NAME" "$PREFIX/bin/$CLONER_NAME"
 
 touch "$BASHRC"
 
-if ! grep -Fqx "# termux-music-player aliases" "$BASHRC"; then
-    {
-        echo
-        echo "# termux-music-player aliases"
-        echo "alias mclone='music-clone'"
-        echo "# end termux-music-player aliases"
-    } >> "$BASHRC"
-    echo "Added alias: mclone"
-else
-    echo "Alias block already exists."
-fi
+# Keep one canonical alias block so rerunning setup updates it instead of
+# stacking duplicate aliases into .bashrc.
+sed -i '/^# termux-music-player aliases$/,/^# end termux-music-player aliases$/d' "$BASHRC"
+
+{
+    echo
+    echo "# termux-music-player aliases"
+    echo "alias music='$APP_NAME'"
+    echo "alias mclone='$CLONER_NAME'"
+    echo "# end termux-music-player aliases"
+} >> "$BASHRC"
+
+echo "Updated aliases: music, mclone"
 
 echo
 echo "Installed:"
 echo "  $PREFIX/bin/$APP_NAME"
 echo "  $PREFIX/bin/$CLONER_NAME"
 echo
-echo "Manual clone:  mclone"
-echo "Watch mode:    mclone --watch"
+echo "Commands:"
+echo "  music <file>       Play music with synced lyrics"
+echo "  mclone             Clone music from Downloads"
+echo "  mclone --watch     Keep cloning new/updated music"
 echo
 echo "Reload Bash after setup with:"
 echo "  source ~/.bashrc"
