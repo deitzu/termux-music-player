@@ -1,32 +1,35 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 APP_NAME="termux-music-player"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CACHE_DIR="$HOME/.cache/$APP_NAME/lyrics"
 CONFIG_FILE="$CONFIG_DIR/config"
 LRCLIB_API="https://lrclib.net/api/get"
+LRCLIB_SEARCH="https://lrclib.net/api/search"
 USER_AGENT="$APP_NAME/$VERSION (https://github.com/deitzu/termux-music-player)"
 
 SUBTITLE_OFFSET_MS=0
-POLL_INTERVAL=0.10
+POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
 
 MUSIC_FILE=""
 TITLE=""
 ARTIST=""
 ALBUM=""
-DURATION_RAW=""
-DURATION_LOOKUP=0
 DURATION_DISPLAY="--:--"
-CACHE_FILE=""
+PLAYER_STATUS=""
+PLAYER_POSITION_MS=0
+PLAYER_DURATION_MS=0
 LYRICS_FILE=""
-PARSED_LYRICS_FILE=""
-MPV_SOCKET=""
-RUNTIME_DIR=""
-MPV_PID=""
-LYRIC_PID=""
+CACHE_FILE=""
+LYRIC_COUNT=0
+CURRENT_INDEX=-1
+LAST_POSITION_MS=-1
+
+declare -a LYRIC_TIMES=()
+declare -a LYRIC_TEXTS=()
 
 usage() {
     cat <<'EOF'
@@ -303,57 +306,74 @@ prepare_lyrics() {
 
 
 parse_lrc() {
-    PARSED_LYRICS_FILE="$RUNTIME_DIR/lyrics.tsv"
+    local timestamp text
+
+    LYRIC_TIMES=()
+    LYRIC_TEXTS=()
+    LYRIC_COUNT=0
+    CURRENT_INDEX=-1
 
     [[ -n "$LYRICS_FILE" && -s "$LYRICS_FILE" ]] || return 0
 
-    awk '
-        {
-            line = $0
-            count = 0
+    while IFS=$'\t' read -r timestamp text; do
+        LYRIC_TIMES[LYRIC_COUNT]="$timestamp"
+        LYRIC_TEXTS[LYRIC_COUNT]="$text"
+        LYRIC_COUNT=$((LYRIC_COUNT + 1))
+    done < <(
+        awk '
+            {
+                line = $0
 
-            while (match(line, /^\[[0-9][0-9]*:[0-9][0-9](\.[0-9][0-9][0-9]?)?\]/)) {
-                tag = substr(line, RSTART, RLENGTH)
-                stamp = substr(tag, 2, length(tag) - 2)
+                while (match(line, /^\[[0-9][0-9]*:[0-9][0-9](\.[0-9][0-9][0-9]?)?\]/)) {
+                    tag = substr(line, RSTART, RLENGTH)
+                    rest = substr(line, RSTART + RLENGTH)
 
-                split(stamp, parts, ":")
-                minute = parts[1]
-                seconds_part = parts[2]
+                    split(substr(tag, 2, length(tag) - 2), p, ":")
+                    split(p[2], s, ".")
 
-                split(seconds_part, secparts, ".")
-                second = secparts[1]
-                millis = 0
+                    ms = p[1] * 60000 + s[1] * 1000
 
-                if (length(secparts) > 1) {
-                    fraction = secparts[2]
-                    if (length(fraction) == 1)
-                        millis = fraction * 100
-                    else if (length(fraction) == 2)
-                        millis = fraction * 10
-                    else
-                        millis = substr(fraction, 1, 3)
+                    if (length(s) > 1) {
+                        if (length(s[2]) == 1) ms += s[2] * 100
+                        else if (length(s[2]) == 2) ms += s[2] * 10
+                        else ms += substr(s[2], 1, 3)
+                    }
+
+                    print ms "\t" rest
+                    line = rest
+
+                    if (line !~ /^\[/)
+                        break
                 }
-
-                times[++count] = minute * 60000 + second * 1000 + millis
-                line = substr(line, RSTART + RLENGTH)
             }
-
-            if (count > 0 && line != "") {
-                for (i = 1; i <= count; i++)
-                    print times[i] "\t" line
-            }
-        }
-    ' "$LYRICS_FILE" > "$PARSED_LYRICS_FILE"
-
-    [[ -s "$PARSED_LYRICS_FILE" ]] || rm -f "$PARSED_LYRICS_FILE"
+        ' "$LYRICS_FILE"
+    )
 }
 
-wait_for_playback_start() {
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        read_player_info && return 0
-        sleep 0.10
+find_lyric_index() {
+    local target="$1"
+    local low=0
+    local high=$((LYRIC_COUNT - 1))
+    local mid
+    local answer=-1
+
+    ((LYRIC_COUNT > 0)) || {
+        printf '%d\n' -1
+        return
+    }
+
+    while ((low <= high)); do
+        mid=$(( (low + high) / 2 ))
+
+        if ((LYRIC_TIMES[mid] <= target)); then
+            answer="$mid"
+            low=$((mid + 1))
+        else
+            high=$((mid - 1))
+        fi
     done
-    return 1
+
+    printf '%d\n' "$answer"
 }
 
 print_lyric_index() {
@@ -374,59 +394,6 @@ print_metadata() {
         echo "  Offset : $SUBTITLE_OFFSET_MS ms"
     fi
     echo
-}
-
-get_current_lyric() {
-    local effective_ms="$1"
-
-    [[ -s "$PARSED_LYRICS_FILE" ]] || return 1
-
-    awk -F '\t' -v ms="$effective_ms" '
-        $1 <= ms {
-            found = $1
-            text = $0
-        }
-        END {
-            if (found != "") {
-                sub(/^[^\t]*\t/, "", text)
-                print found "\t" text
-            }
-        }
-    ' "$PARSED_LYRICS_FILE"
-}
-
-subtitle_loop() {
-    local current_timestamp=-1
-    local last_position_ms=-1
-    local position_ms effective_ms candidate candidate_time candidate_text
-
-    [[ -s "$PARSED_LYRICS_FILE" ]] || return 0
-
-    while kill -0 "$MPV_PID" 2>/dev/null; do
-        if position_ms="$(get_time_pos_ms)"; then
-            effective_ms=$((position_ms - SUBTITLE_OFFSET_MS))
-
-            if ((last_position_ms >= 0 && effective_ms < last_position_ms - 500)); then
-                current_timestamp=-1
-            fi
-
-            candidate="$(get_current_lyric "$effective_ms" || true)"
-
-            if [[ -n "$candidate" ]]; then
-                candidate_time="$(printf '%s\n' "$candidate" | cut -f1)"
-                candidate_text="$(printf '%s\n' "$candidate" | cut -f2-)"
-
-                if [[ "$candidate_time" != "$current_timestamp" ]]; then
-                    current_timestamp="$candidate_time"
-                    echo "$candidate_text"
-                fi
-            fi
-
-            last_position_ms="$effective_ms"
-        fi
-
-        sleep "$POLL_INTERVAL"
-    done
 }
 
 cleanup() {
