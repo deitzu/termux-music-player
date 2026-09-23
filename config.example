@@ -5,8 +5,8 @@
 # Negative values make subtitles appear earlier.
 SUBTITLE_OFFSET_MS=0
 
-# Poll interval for mpv playback position.
-# Smaller values improve timing but use more CPU.
+# Poll interval for termux-media-player playback position.
+# Smaller values improve sync but use more CPU.
 POLL_INTERVAL=0.20
 
 # Maximum seconds for an LRCLIB request.
