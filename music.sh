@@ -217,17 +217,14 @@ make_cache_key() {
         sha256sum |
         cut -d' ' -f1
 }
-find_cached_lyrics() {
-    local key
-    key="$(make_cache_key)"
-    CACHE_FILE="$CACHE_DIR/$key.lrc"
 
+find_cached_lyrics() {
+    CACHE_FILE="$CACHE_DIR/$(make_cache_key).lrc"
     [[ -s "$CACHE_FILE" ]] || return 1
     LYRICS_FILE="$CACHE_FILE"
-    return 0
 }
 
-curl_lrclib() {
+curl_json() {
     curl \
         --silent \
         --show-error \
@@ -236,8 +233,6 @@ curl_lrclib() {
         --max-time "$LRCLIB_TIMEOUT" \
         --header "User-Agent: $USER_AGENT" \
         --get \
-        --data-urlencode "track_name=$TITLE" \
-        --data-urlencode "artist_name=$ARTIST" \
         "$@"
 }
 
@@ -253,12 +248,13 @@ fetch_lyrics() {
     )"
 
     synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
-    [[ -n "$synced" ]] && {
+
+    if [[ -n "$synced" ]]; then
         mkdir -p "$CACHE_DIR"
         printf '%s\n' "$synced" > "$CACHE_FILE"
         LYRICS_FILE="$CACHE_FILE"
         return 0
-    }
+    fi
 
     json="$(
         curl_json \
@@ -268,12 +264,13 @@ fetch_lyrics() {
     )"
 
     synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
-    [[ -n "$synced" ]] && {
+
+    if [[ -n "$synced" ]]; then
         mkdir -p "$CACHE_DIR"
         printf '%s\n' "$synced" > "$CACHE_FILE"
         LYRICS_FILE="$CACHE_FILE"
         return 0
-    }
+    fi
 
     json="$(
         curl_json \
@@ -288,26 +285,22 @@ fetch_lyrics() {
             jq -r '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")][0].syncedLyrics // ""' 2>/dev/null || true
     )"
 
-    [[ -n "$synced" ]] || return 1
-
-    mkdir -p "$CACHE_DIR"
-    printf '%s\n' "$synced" > "$CACHE_FILE"
-    LYRICS_FILE="$CACHE_FILE"
-}
-prepare_lyrics() {
-    if find_cached_lyrics; then
-        echo "Lyrics: cache"
+    if [[ -n "$synced" ]]; then
+        mkdir -p "$CACHE_DIR"
+        printf '%s\n' "$synced" > "$CACHE_FILE"
+        LYRICS_FILE="$CACHE_FILE"
         return 0
     fi
 
-    echo "Lyrics: fetching from LRCLIB..."
-    if fetch_lyrics; then
-        echo "Lyrics: cached"
-    else
-        echo "Lyrics: unavailable"
-        LYRICS_FILE=""
-    fi
+    return 1
 }
+
+prepare_lyrics() {
+    mkdir -p "$CACHE_DIR"
+    find_cached_lyrics && return 0
+    fetch_lyrics || true
+}
+
 
 parse_lrc() {
     PARSED_LYRICS_FILE="$RUNTIME_DIR/lyrics.tsv"
