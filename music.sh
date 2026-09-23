@@ -277,12 +277,42 @@ curl_json() {
 }
 
 fetch_lyrics() {
-    local json synced
+    local json synced query
 
-    local query
+    json="$(
+        curl_json \
+            --data-urlencode "track_name=$TITLE" \
+            --data-urlencode "artist_name=$ARTIST" \
+            --data-urlencode "album_name=$ALBUM" \
+            "$LRCLIB_API" 2>/dev/null || true
+    )"
 
-    # Search with multiple query shapes to improve matches when metadata
-    # is incomplete or formatted differently from LRCLIB.
+    synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
+
+    if [[ -n "$synced" ]]; then
+        mkdir -p "$CACHE_DIR"
+        printf '%s\n' "$synced" > "$CACHE_FILE"
+        LYRICS_FILE="$CACHE_FILE"
+        return 0
+    fi
+
+    json="$(
+        curl_json \
+            --data-urlencode "track_name=$TITLE" \
+            --data-urlencode "artist_name=$ARTIST" \
+            "$LRCLIB_API" 2>/dev/null || true
+    )"
+
+    synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
+
+    if [[ -n "$synced" ]]; then
+        mkdir -p "$CACHE_DIR"
+        printf '%s\n' "$synced" > "$CACHE_FILE"
+        LYRICS_FILE="$CACHE_FILE"
+        return 0
+    fi
+
+    # Search with multiple query shapes when direct metadata lookup fails.
     for query in "$TITLE $ARTIST" "$ARTIST $TITLE" "$TITLE"; do
         json="$(
             curl_json \
@@ -303,7 +333,7 @@ fetch_lyrics() {
         fi
     done
 
-    return 1    return 1
+    return 1
 }
 
 prepare_lyrics() {
