@@ -6,7 +6,7 @@ A small Bash music player for Termux with synchronized lyrics from LRCLIB.
 
 - Plays a local music file through Termux's media-player API.
 - Uses termux-media-player as the playback clock.
-- Reads basic MP3 metadata without ffmpeg or ffprobe.
+- Reads metadata with lightweight format-specific parsers for ID3v2/ID3v1, FLAC/Vorbis comments, Ogg/Opus comments, MP4/M4A atoms, and WAV RIFF INFO tags.
 - Fetches synchronized lyrics from LRCLIB and caches them as LRC files.
 - Prints lyrics with echo as playback reaches each timestamp.
 - Supports a configurable subtitle offset in milliseconds.
@@ -41,6 +41,8 @@ bash setup.sh --install-deps
 ~~~
 
 The project intentionally does not install mpv or ffmpeg.
+
+The metadata parser uses only small shell/Unix tools already available in Termux. It does not require ffmpeg, ffprobe, or a large media-metadata library.
 
 Setup also adds a small alias block to `~/.bashrc`:
 
@@ -154,7 +156,7 @@ A positive offset delays the lyric relative to playback. A negative offset advan
 
 This is still an experimental MVP.
 
-- Metadata parsing is intentionally small and currently focuses on ID3v1 plus filename fallback.
+- Metadata parsing is intentionally lightweight and uses format-specific parsers with filename fallback. Some uncommon container-specific tags may still require a future parser pass.
 - A player seek is handled by jumping the lyric pointer to the timestamp active at the new position.
 - Very large forward jumps skip directly to the active lyric instead of printing every skipped line.
 - There is no playlist, TUI, music downloader, or music database.
