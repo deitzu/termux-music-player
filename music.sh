@@ -265,7 +265,7 @@ fetch_lyrics() {
             --data-urlencode "track_name=$TITLE" \
             --data-urlencode "artist_name=$ARTIST" \
             --data-urlencode "album_name=$ALBUM" \
-            $LRCLIB_API 2>/dev/null || true
+            "$LRCLIB_API" 2>/dev/null || true
     )"
 
     synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
@@ -281,7 +281,7 @@ fetch_lyrics() {
         curl_json \
             --data-urlencode "track_name=$TITLE" \
             --data-urlencode "artist_name=$ARTIST" \
-            $LRCLIB_API 2>/dev/null || true
+            "$LRCLIB_API" 2>/dev/null || true
     )"
 
     synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
