@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 APP_NAME="termux-music-player"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CACHE_DIR="$HOME/.cache/$APP_NAME/lyrics"
@@ -138,7 +138,7 @@ trim_text() {
 }
 
 parse_id3v1() {
-    local size start tag
+    local size start tag value bytes
 
     size="$(wc -c < "$MUSIC_FILE")"
     ((size >= 128)) || return 0
@@ -148,23 +148,37 @@ parse_id3v1() {
     tag="$(dd if="$MUSIC_FILE" bs=1 skip="$start" count=3 2>/dev/null)"
     [[ "$tag" == "TAG" ]] || return 0
 
-    [[ -n "$TITLE" ]] || TITLE="$(
+    # ID3v1 fields are exactly 30 bytes. A full 30-byte value may be
+    # truncated, so do not present it as complete metadata.
+    value="$(
         dd if="$MUSIC_FILE" bs=1 skip=$((start + 3)) count=30 2>/dev/null |
             tr -d '\000' |
             trim_text
     )"
+    bytes="$(printf '%s' "$value" | wc -c)"
+    if [[ -z "$TITLE" && "$bytes" -lt 30 ]]; then
+        TITLE="$value"
+    fi
 
-    [[ -n "$ARTIST" ]] || ARTIST="$(
+    value="$(
         dd if="$MUSIC_FILE" bs=1 skip=$((start + 33)) count=30 2>/dev/null |
             tr -d '\000' |
             trim_text
     )"
+    bytes="$(printf '%s' "$value" | wc -c)"
+    if [[ -z "$ARTIST" && "$bytes" -lt 30 ]]; then
+        ARTIST="$value"
+    fi
 
-    [[ -n "$ALBUM" ]] || ALBUM="$(
+    value="$(
         dd if="$MUSIC_FILE" bs=1 skip=$((start + 63)) count=30 2>/dev/null |
             tr -d '\000' |
             trim_text
     )"
+    bytes="$(printf '%s' "$value" | wc -c)"
+    if [[ -z "$ALBUM" && "$bytes" -lt 30 ]]; then
+        ALBUM="$value"
+    fi
 }
 
 read_metadata() {
@@ -177,8 +191,8 @@ read_metadata() {
     base="$(basename "$MUSIC_FILE")"
     base="$(printf '%s\n' "$base" | sed 's/\.[^.]*$//')"
 
-    # Prefer a descriptive filename when it follows "Artist - Title".
-    # ID3v1 fields are limited to 30 bytes and may silently truncate long titles.
+    # Prefer filename title/artist because ID3v1 can silently truncate
+    # long values at 30 bytes.
     if [[ "$base" == *" - "* ]]; then
         artist_guess="${base%% - *}"
         title_guess="${base#* - }"
@@ -186,7 +200,6 @@ read_metadata() {
         TITLE="$title_guess"
     fi
 
-    # Use ID3v1 for the album, or as a fallback when the filename has no split.
     parse_id3v1
 
     if [[ -z "$TITLE" ]]; then
@@ -266,60 +279,31 @@ curl_json() {
 fetch_lyrics() {
     local json synced
 
-    json="$(
-        curl_json \
-            --data-urlencode "track_name=$TITLE" \
-            --data-urlencode "artist_name=$ARTIST" \
-            --data-urlencode "album_name=$ALBUM" \
-            "$LRCLIB_API" 2>/dev/null || true
-    )"
+    local query
 
-    synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
+    # Search with multiple query shapes to improve matches when metadata
+    # is incomplete or formatted differently from LRCLIB.
+    for query in "$TITLE $ARTIST" "$ARTIST $TITLE" "$TITLE"; do
+        json="$(
+            curl_json \
+                --data-urlencode "q=$query" \
+                "$LRCLIB_SEARCH" 2>/dev/null || true
+        )"
 
-    if [[ -n "$synced" ]]; then
-        mkdir -p "$CACHE_DIR"
-        printf '%s\n' "$synced" > "$CACHE_FILE"
-        LYRICS_FILE="$CACHE_FILE"
-        return 0
-    fi
+        synced="$(
+            printf '%s' "$json" |
+                jq -r '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")][0].syncedLyrics // ""' 2>/dev/null || true
+        )"
 
-    json="$(
-        curl_json \
-            --data-urlencode "track_name=$TITLE" \
-            --data-urlencode "artist_name=$ARTIST" \
-            "$LRCLIB_API" 2>/dev/null || true
-    )"
+        if [[ -n "$synced" ]]; then
+            mkdir -p "$CACHE_DIR"
+            printf '%s\n' "$synced" > "$CACHE_FILE"
+            LYRICS_FILE="$CACHE_FILE"
+            return 0
+        fi
+    done
 
-    synced="$(printf '%s' "$json" | jq -r '.syncedLyrics // ""' 2>/dev/null || true)"
-
-    if [[ -n "$synced" ]]; then
-        mkdir -p "$CACHE_DIR"
-        printf '%s\n' "$synced" > "$CACHE_FILE"
-        LYRICS_FILE="$CACHE_FILE"
-        return 0
-    fi
-
-    json="$(
-        curl_json \
-            --data-urlencode "track_name=$TITLE" \
-            --data-urlencode "artist_name=$ARTIST" \
-            --data-urlencode "q=$TITLE" \
-            "$LRCLIB_SEARCH" 2>/dev/null || true
-    )"
-
-    synced="$(
-        printf '%s' "$json" |
-            jq -r '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")][0].syncedLyrics // ""' 2>/dev/null || true
-    )"
-
-    if [[ -n "$synced" ]]; then
-        mkdir -p "$CACHE_DIR"
-        printf '%s\n' "$synced" > "$CACHE_FILE"
-        LYRICS_FILE="$CACHE_FILE"
-        return 0
-    fi
-
-    return 1
+    return 1    return 1
 }
 
 prepare_lyrics() {
@@ -417,6 +401,12 @@ print_metadata() {
     else
         echo "  Offset : $SUBTITLE_OFFSET_MS ms"
     fi
+
+    if [[ -n "$LYRICS_FILE" ]]; then
+        echo "  Lyrics : synced (LRCLIB)"
+    else
+        echo "  Lyrics : not found"
+    fi
     echo
 }
 
@@ -425,6 +415,8 @@ cleanup() {
 }
 
 main() {
+    trap cleanup EXIT INT TERM
+
     load_config
     parse_args "$@"
     check_dependencies
