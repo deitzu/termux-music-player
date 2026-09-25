@@ -103,10 +103,11 @@ sed -i '/^# termux-music-player aliases$/,/^# end termux-music-player aliases$/d
     echo "alias music='$APP_NAME'"
     echo "alias mclone='$CLONER_NAME'"
     echo "alias mwatch='$CLONER_NAME --watch'"
+    echo "alias mlyrics='$APP_NAME --fetch-all'"
     echo "# end termux-music-player aliases"
 } >> "$BASHRC"
 
-echo "Updated aliases: music, mclone, mwatch"
+echo "Updated aliases: music, mclone, mwatch, mlyrics"
 
 echo
 echo "Installed:"
@@ -117,6 +118,7 @@ echo "Commands:"
 echo "  music <file>       Play music with synced lyrics"
 echo "  mclone             Clone music from Downloads"
 echo "  mclone --watch     Keep cloning new/updated music"
+echo "  mlyrics             Fetch lyrics for all music in ~/Music"
 echo
 echo "Reload Bash after setup with:"
 echo "  source ~/.bashrc"
