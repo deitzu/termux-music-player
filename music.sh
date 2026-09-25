@@ -5,16 +5,22 @@ VERSION="0.5.2"
 APP_NAME="termux-music-player"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 CACHE_DIR="$HOME/.cache/$APP_NAME/lyrics"
+OFFSET_CACHE_DIR="$HOME/.cache/$APP_NAME/offsets"
 CONFIG_FILE="$CONFIG_DIR/config"
 LRCLIB_API="https://lrclib.net/api/get"
 LRCLIB_SEARCH="https://lrclib.net/api/search"
 USER_AGENT="$APP_NAME/$VERSION (https://github.com/deitzu/termux-music-player)"
 
 SUBTITLE_OFFSET_MS=0
+OFFSET_EXPLICIT=0
+OFFSET_SOURCE="config"
 POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
 
 MUSIC_FILE=""
+FETCH_ALL=0
+FETCH_ROOT=""
+FORCE_FETCH=0
 TITLE=""
 ARTIST=""
 ALBUM=""
@@ -36,21 +42,31 @@ usage() {
 Usage:
   termux-music-player <music-file> [--offset <milliseconds>]
   termux-music-player <music-file> [--offset=<milliseconds>]
+  termux-music-player --fetch-all [directory] [--force]
 
 Options:
-  --offset MS    Subtitle offset. Positive delays subtitles, negative advances them.
-  -h, --help     Show this help.
+  --offset MS      Subtitle offset. Positive delays subtitles, negative advances them.
+                   Explicit values are remembered for this track.
+  --fetch-all DIR  Fetch and cache synced lyrics for all music files under DIR.
+                   Defaults to ~/Music and does not play anything.
+  --force          Re-fetch lyrics even when a cache entry already exists.
+  -h, --help       Show this help.
 
 Examples:
   termux-music-player ~/Music/song.mp3
   termux-music-player ~/Music/song.flac --offset 350
-  termux-music-player ~/Music/song.m4a --offset=-250
+  termux-music-player ~/Music/song.mp3
+  termux-music-player --fetch-all
+  termux-music-player --fetch-all ~/Music --force
 
 Config:
   ~/.config/termux-music-player/config
 
 Lyrics cache:
   ~/.cache/termux-music-player/lyrics/
+
+Per-track offset cache:
+  ~/.cache/termux-music-player/offsets/
 EOF
 }
 
@@ -85,10 +101,20 @@ parse_args() {
             --offset)
                 (($# >= 2)) || die "--offset requires a value."
                 SUBTITLE_OFFSET_MS="$2"
+                OFFSET_EXPLICIT=1
                 shift 2
                 ;;
             --offset=*)
                 SUBTITLE_OFFSET_MS="$(printf '%s\n' "$1" | sed 's/^--offset=//')"
+                OFFSET_EXPLICIT=1
+                shift
+                ;;
+            --fetch-all)
+                FETCH_ALL=1
+                shift
+                ;;
+            --force)
+                FORCE_FETCH=1
                 shift
                 ;;
             --)
@@ -101,13 +127,29 @@ parse_args() {
                 die "Unknown option: $1"
                 ;;
             *)
-                [[ -z "$MUSIC_FILE" ]] ||
-                    die "Only one music file can be played at a time."
-                MUSIC_FILE="$1"
-                shift
+                if ((FETCH_ALL)); then
+                    [[ -z "$FETCH_ROOT" ]] ||
+                        die "Only one fetch-all directory can be provided."
+                    FETCH_ROOT="$1"
+                    shift
+                else
+                    [[ -z "$MUSIC_FILE" ]] ||
+                        die "Only one music file can be played at a time."
+                    MUSIC_FILE="$1"
+                    shift
+                fi
                 ;;
         esac
     done
+
+    if ((FETCH_ALL)); then
+        ((OFFSET_EXPLICIT == 0)) ||
+            die "--offset cannot be used with --fetch-all."
+        FETCH_ROOT="${FETCH_ROOT:-$HOME/Music}"
+        [[ -d "$FETCH_ROOT" ]] ||
+            die "Fetch directory does not exist: $FETCH_ROOT"
+        return
+    fi
 
     [[ -n "$MUSIC_FILE" ]] || {
         usage >&2
@@ -128,9 +170,14 @@ parse_args() {
 
 check_dependencies() {
     local command
-    for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp grep; do
+    for command in curl jq sha256sum awk sed dd od cut head wc mktemp grep find tr readlink; do
         command -v "$command" >/dev/null 2>&1 || die "Missing dependency: $command"
     done
+}
+
+check_playback_dependency() {
+    command -v termux-media-player >/dev/null 2>&1 ||
+        die "Missing dependency: termux-media-player"
 }
 
 trim_text() {
@@ -627,6 +674,83 @@ find_cached_lyrics() {
     LYRICS_FILE="$CACHE_FILE"
 }
 
+resolve_offset() {
+    OFFSET_CACHE_FILE="$OFFSET_CACHE_DIR/$(make_cache_key).offset"
+
+    if ((OFFSET_EXPLICIT)); then
+        mkdir -p "$OFFSET_CACHE_DIR"
+        printf '%s\n' "$SUBTITLE_OFFSET_MS" > "$OFFSET_CACHE_FILE"
+        OFFSET_SOURCE="command"
+        return
+    fi
+
+    if [[ -s "$OFFSET_CACHE_FILE" ]]; then
+        local cached_offset
+        cached_offset="$(head -n1 "$OFFSET_CACHE_FILE")"
+        if [[ "$cached_offset" =~ ^-?[0-9]+$ ]]; then
+            SUBTITLE_OFFSET_MS="$cached_offset"
+            OFFSET_SOURCE="saved"
+        fi
+    fi
+}
+
+is_music_file() {
+    local ext
+    ext="$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')"
+
+    case "$ext" in
+        mp3|flac|wav|m4a|aac|ogg|oga|opus|wma|alac|aiff|aif|ape)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+fetch_all_lyrics() {
+    local total=0 cached=0 fetched=0 missing=0 file
+
+    mkdir -p "$CACHE_DIR"
+
+    echo "Fetching lyrics under: $FETCH_ROOT"
+    echo
+
+    while IFS= read -r -d '' file; do
+        is_music_file "$file" || continue
+
+        MUSIC_FILE="$file"
+        TITLE=""
+        ARTIST=""
+        ALBUM=""
+        LYRICS_FILE=""
+        read_metadata
+        CACHE_FILE="$CACHE_DIR/$(make_cache_key).lrc"
+        total=$((total + 1))
+
+        if ((FORCE_FETCH == 0)) && find_cached_lyrics; then
+            cached=$((cached + 1))
+            echo "[cached] $ARTIST - $TITLE"
+            continue
+        fi
+
+        if fetch_lyrics; then
+            fetched=$((fetched + 1))
+            echo "[fetched] $ARTIST - $TITLE"
+        else
+            missing=$((missing + 1))
+            echo "[missing] $ARTIST - $TITLE"
+        fi
+    done < <(find "$FETCH_ROOT" -type f -print0)
+
+    echo
+    echo "Fetch complete:"
+    echo "  Music files : $total"
+    echo "  Cached      : $cached"
+    echo "  Fetched     : $fetched"
+    echo "  Missing     : $missing"
+}
+
 curl_json() {
     curl \
         --silent \
@@ -789,9 +913,9 @@ print_metadata() {
     echo "  Length : $DURATION_DISPLAY"
 
     if ((SUBTITLE_OFFSET_MS > 0)); then
-        echo "  Offset : +$SUBTITLE_OFFSET_MS ms"
+        echo "  Offset : +$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     else
-        echo "  Offset : $SUBTITLE_OFFSET_MS ms"
+        echo "  Offset : $SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     fi
 
     if [[ -n "$LYRICS_FILE" ]]; then
@@ -812,7 +936,15 @@ main() {
     load_config
     parse_args "$@"
     check_dependencies
+
+    if ((FETCH_ALL)); then
+        fetch_all_lyrics
+        return 0
+    fi
+
+    check_playback_dependency
     read_metadata
+    resolve_offset
     prepare_lyrics
     parse_lrc
 
