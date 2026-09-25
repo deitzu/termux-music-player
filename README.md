@@ -145,9 +145,7 @@ The metadata reader currently prefers a filename convention such as:
 Artist - Title.mp3
 ~~~
 
-It also reads ID3v1 when useful. ID3v1 only has 30-byte title, artist, and album fields, so a full 30-byte value is treated as potentially truncated instead of being displayed as if it were complete.
-
-ID3v2 support is intentionally left for a later parser pass rather than pulling in a large metadata dependency.
+It also reads ID3v1 when useful. ID3v1 only has 30-byte title, artist, and album fields, so a full 30-byte value is treated as potentially truncated instead of being displayed as if it were complete. ID3v2 is parsed directly without pulling in a large metadata dependency.
 
 ## LRCLIB
 
