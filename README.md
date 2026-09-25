@@ -50,6 +50,7 @@ Setup also adds a small alias block to `~/.bashrc`:
 alias music='termux-music-player'
 alias mclone='music-clone'
 alias mwatch='music-clone --watch'
+alias mlyrics='termux-music-player --fetch-all'
 ~~~
 
 Reload the shell after installation:
@@ -68,6 +69,24 @@ music ~/Music/song.mp3
 
 The full command `termux-music-player` still works.
 
+Fetch and cache synced lyrics for every supported music file under `~/Music` without playing anything:
+
+~~~bash
+mlyrics
+~~~
+
+Use a different directory:
+
+~~~bash
+music --fetch-all ~/Music
+~~~
+
+Force a re-fetch even when a lyric cache already exists:
+
+~~~bash
+music --fetch-all ~/Music --force
+~~~
+
 Override subtitle timing for one run:
 
 ~~~bash
@@ -76,9 +95,19 @@ music ~/Music/song.mp3 --offset -300
 
 Positive offsets delay subtitles. Negative offsets make them appear earlier.
 
+When `--offset` is explicitly supplied, that value is saved per track. A later run without `--offset` reuses the saved value for that track; when no saved value exists, the global `SUBTITLE_OFFSET_MS` from the config is used.
+
+Per-track offset cache:
+
+~~~text
+~/.cache/termux-music-player/offsets/
+~~~
+
 ## How it works
 
 The player first reads metadata and prepares lyrics. It then starts the local file through termux-media-player and polls its playback information.
+
+The same lyric-fetching path can be run independently with `--fetch-all`. It scans supported audio files, resolves metadata, and stores synced LRCLIB lyrics in the normal lyric cache without starting playback.
 
 ~~~text
 local music
@@ -213,7 +242,7 @@ music-clone --source ~/storage/download --dest ~/Music
 
 Non-music files are ignored. Existing files are left alone unless the source file is newer.
 
-The setup script installs the `music-clone` command and adds the `mclone` alias to `~/.bashrc`.
+The setup script installs the `music-clone` command and adds the `mclone`, `mwatch`, and `mlyrics` aliases to `~/.bashrc`.
 
 ~~~bash
 alias mclone='music-clone'
