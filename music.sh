@@ -101,7 +101,8 @@ Bulk lyric options:
   --fetch-all DIR   Fetch and cache synced LRCLIB lyrics for music under DIR.
                     Defaults to ~/Music and does not start playback.
   --force           With --fetch-all, fetch again even when a lyric cache exists.
-  --select-lyrics   Pick a synced LRCLIB result manually; replaces this track's lyric cache.
+  --select-lyrics   Edit search metadata, then choose synced LRCLIB lyrics.
+                    Enter keeps fields; '-' clears artist/album. Replaces cache.
 
 Other:
   -h, --help        Show this help.
@@ -1044,21 +1045,53 @@ curl_json() {
 # key remains based on the local file's metadata so the choice is reused later.
 select_lyrics_manually() {
     local all_json='[]' json candidates count choice synced selected_title selected_artist
+    local search_title="$TITLE" search_artist="$ARTIST" search_album="$ALBUM" answer
+    local -a search_args=()
 
     [[ -t 0 ]] || {
         echo "Manual lyric selection requires an interactive terminal." >&2
         return 1
     }
 
+    # Let users correct tags such as parenthetical title suffixes without
+    # changing the local track metadata or cache key.
+    echo "Edit LRCLIB search metadata (Enter keeps current; '-' clears artist/album)." >&2
+
+    printf 'Track title [%s]: ' "$search_title" >&2
+    IFS= read -r answer || return 1
+    if [[ -n "$answer" ]]; then
+        search_title="$(printf '%s' "$answer" | trim_text)"
+    fi
+    [[ -n "$search_title" ]] || {
+        echo "Track title cannot be empty." >&2
+        return 1
+    }
+
+    printf 'Artist [%s]: ' "${search_artist:-<empty>}" >&2
+    IFS= read -r answer || return 1
+    if [[ "$answer" == "-" ]]; then
+        search_artist=""
+    elif [[ -n "$answer" ]]; then
+        search_artist="$(printf '%s' "$answer" | trim_text)"
+    fi
+
+    printf 'Album [%s]: ' "${search_album:-<empty>}" >&2
+    IFS= read -r answer || return 1
+    if [[ "$answer" == "-" ]]; then
+        search_album=""
+    elif [[ -n "$answer" ]]; then
+        search_album="$(printf '%s' "$answer" | trim_text)"
+    fi
+
+    printf 'Search metadata: title=%s | artist=%s | album=%s\n' \
+        "$search_title" "${search_artist:-<empty>}" "${search_album:-<empty>}" >&2
+
     # Start with structured fields, then broaden the search only if there are
     # too few selectable synced-lyrics results.
-    json="$(
-        curl_json \
-            --data-urlencode "track_name=$TITLE" \
-            --data-urlencode "artist_name=$ARTIST" \
-            --data-urlencode "album_name=$ALBUM" \
-            "$LRCLIB_SEARCH" 2>/dev/null || true
-    )"
+    search_args=(--data-urlencode "track_name=$search_title")
+    [[ -n "$search_artist" ]] && search_args+=(--data-urlencode "artist_name=$search_artist")
+    [[ -n "$search_album" ]] && search_args+=(--data-urlencode "album_name=$search_album")
+    json="$(curl_json "${search_args[@]}" "$LRCLIB_SEARCH" 2>/dev/null || true)"
     if printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
         all_json="$(jq -cn --argjson existing "$all_json" --argjson incoming "$json" \
             '$existing + $incoming | reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end)')"
@@ -1071,7 +1104,7 @@ select_lyrics_manually() {
         sleep 0.3
         json="$(
             curl_json \
-                --data-urlencode "q=$TITLE $ARTIST" \
+                --data-urlencode "q=$search_title $search_artist" \
                 "$LRCLIB_SEARCH" 2>/dev/null || true
         )"
         if printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -1086,7 +1119,7 @@ select_lyrics_manually() {
         sleep 0.3
         json="$(
             curl_json \
-                --data-urlencode "q=$TITLE" \
+                --data-urlencode "q=$search_title" \
                 "$LRCLIB_SEARCH" 2>/dev/null || true
         )"
         if printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -1102,7 +1135,7 @@ select_lyrics_manually() {
         return 1
     fi
 
-    echo "Synced-lyrics candidates for: $ARTIST - $TITLE" >&2
+    echo "Synced-lyrics candidates for: ${search_artist:+$search_artist - }$search_title" >&2
     printf '%s\n' "  0. Cancel (keep no new selection)" >&2
     printf '%s\n' "$candidates" | jq -r '
         to_entries[] |
