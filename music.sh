@@ -16,6 +16,11 @@ OFFSET_EXPLICIT=0
 OFFSET_SOURCE="config"
 POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
+PLAYER="auto"
+PLAYER_BACKEND=""
+MPG123_STARTED=0
+MPG123_ENDED=0
+MPG123_SAW_PLAY=0
 
 MUSIC_FILE=""
 FETCH_ALL=0
@@ -42,11 +47,15 @@ usage() {
 Usage:
   termux-music-player <music-file> [--offset <milliseconds>]
   termux-music-player <music-file> [--offset=<milliseconds>]
+  termux-music-player <music-file> [--player auto|termux|mpg123]
   termux-music-player --fetch-all [directory] [--force]
 
 Options:
   --offset MS      Subtitle offset. Positive delays subtitles, negative advances them.
                    Explicit values are remembered for this track.
+  --player NAME    Playback backend: auto (default), termux, or mpg123.
+                   auto uses mpg123 for .mp3 when installed, otherwise
+                   termux-media-player. mpg123 only plays mp3.
   --fetch-all DIR  Fetch and cache synced lyrics for all music files under DIR.
                    Defaults to ~/Music and does not play anything.
   --force          Re-fetch lyrics even when a cache entry already exists.
@@ -107,6 +116,15 @@ parse_args() {
             --offset=*)
                 SUBTITLE_OFFSET_MS="$(printf '%s\n' "$1" | sed 's/^--offset=//')"
                 OFFSET_EXPLICIT=1
+                shift
+                ;;
+            --player)
+                (($# >= 2)) || die "--player requires a value."
+                PLAYER="$2"
+                shift 2
+                ;;
+            --player=*)
+                PLAYER="${1#--player=}"
                 shift
                 ;;
             --fetch-all)
@@ -175,9 +193,37 @@ check_dependencies() {
     done
 }
 
-check_playback_dependency() {
-    command -v termux-media-player >/dev/null 2>&1 ||
-        die "Missing dependency: termux-media-player"
+resolve_player() {
+    local ext
+    ext="${MUSIC_FILE##*.}"
+    ext="${ext,,}"
+
+    case "$PLAYER" in
+        mpg123)
+            command -v mpg123 >/dev/null 2>&1 ||
+                die "PLAYER=mpg123 but mpg123 is not installed (pkg install mpg123)."
+            [[ "$ext" == "mp3" ]] ||
+                die "The mpg123 backend only plays mp3 (got .$ext). Use --player auto or termux."
+            PLAYER_BACKEND="mpg123"
+            ;;
+        termux)
+            command -v termux-media-player >/dev/null 2>&1 ||
+                die "Missing dependency: termux-media-player"
+            PLAYER_BACKEND="termux"
+            ;;
+        auto)
+            if [[ "$ext" == "mp3" ]] && command -v mpg123 >/dev/null 2>&1; then
+                PLAYER_BACKEND="mpg123"
+            else
+                command -v termux-media-player >/dev/null 2>&1 ||
+                    die "Missing dependency: termux-media-player"
+                PLAYER_BACKEND="termux"
+            fi
+            ;;
+        *)
+            die "PLAYER must be auto, termux or mpg123 (got: $PLAYER)."
+            ;;
+    esac
 }
 
 trim_text() {
@@ -636,7 +682,140 @@ time_to_ms() {
     fi
 }
 
+format_duration_ms() {
+    local total=$(($1 / 1000)) h m s
+    h=$((total / 3600))
+    m=$(((total % 3600) / 60))
+    s=$((total % 60))
+    if ((h)); then
+        printf -v DURATION_DISPLAY '%d:%02d:%02d' "$h" "$m" "$s"
+    else
+        printf -v DURATION_DISPLAY '%02d:%02d' "$m" "$s"
+    fi
+}
+
+# Convert "12.34" seconds to whole milliseconds without forking.
+secs_to_ms() {
+    local value="$1" whole frac
+    whole="${value%%.*}"
+    frac=""
+    [[ "$value" == *.* ]] && frac="${value#*.}"
+    frac="${frac}000"
+    frac="${frac:0:3}"
+    [[ "$whole" =~ ^[0-9]+$ && "$frac" =~ ^[0-9]+$ ]] || return 1
+    SECS_TO_MS=$((10#$whole * 1000 + 10#$frac))
+}
+
+ensure_audio_server() {
+    command -v pulseaudio >/dev/null 2>&1 || return 0
+    pulseaudio --check >/dev/null 2>&1 && return 0
+    pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || true
+}
+
+mpg123_start() {
+    ensure_audio_server
+    coproc MPG123 { exec mpg123 -R 2>/dev/null; }
+    MPG123_STARTED=1
+    MPG123_ENDED=0
+    MPG123_SAW_PLAY=0
+    kill -0 "${MPG123_PID:-0}" 2>/dev/null ||
+        die "mpg123 could not start."
+    printf 'LOAD %s\n' "$MUSIC_FILE" >&"${MPG123[1]}"
+}
+
+mpg123_stop() {
+    ((MPG123_STARTED)) || return 0
+    MPG123_STARTED=0
+    MPG123_ENDED=1
+    # bash unsets MPG123_PID/MPG123 on its own once the coprocess has exited.
+    local pid="${MPG123_PID:-}"
+    [[ -n "$pid" ]] || return 0
+    if kill -0 "$pid" 2>/dev/null; then
+        printf 'QUIT\n' >&"${MPG123[1]}" 2>/dev/null || true
+        sleep 0.1
+        kill "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+}
+
+# mpg123 -R prints one status line per event:
+#   @P 0|1|2                      stopped | paused | playing
+#   @F frame frames-left sec sec-left   playback position, in seconds
+mpg123_handle_line() {
+    local -a f
+    case "$1" in
+        "@F "*)
+            read -r -a f <<< "$1"
+            secs_to_ms "${f[3]:-}" || return 0
+            PLAYER_POSITION_MS="$SECS_TO_MS"
+            secs_to_ms "${f[4]:-}" || return 0
+            local total=$((PLAYER_POSITION_MS + SECS_TO_MS))
+            if ((total / 1000 != PLAYER_DURATION_MS / 1000)); then
+                PLAYER_DURATION_MS="$total"
+                format_duration_ms "$total"
+            fi
+            ;;
+        "@P "*)
+            case "${1#@P }" in
+                2) PLAYER_STATUS="Playing"; MPG123_SAW_PLAY=1 ;;
+                1) PLAYER_STATUS="Paused" ;;
+                0) if ((MPG123_SAW_PLAY)); then MPG123_ENDED=1; fi ;;
+            esac
+            ;;
+        "@E "*)
+            MPG123_ENDED=1
+            ;;
+    esac
+    return 0
+}
+
+# Waits up to POLL_INTERVAL for output, then drains whatever is buffered so the
+# position never lags behind. Returns 1 once playback has ended.
+mpg123_read_info() {
+    local line fd="${MPG123[0]:-}"
+    ((MPG123_ENDED == 0)) || return 1
+    [[ -n "$fd" ]] || return 1
+
+    if IFS= read -r -t "$POLL_INTERVAL" -u "$fd" line; then
+        mpg123_handle_line "$line"
+        while read -t 0 -u "$fd" 2>/dev/null; do
+            IFS= read -r -t 0.05 -u "$fd" line || break
+            mpg123_handle_line "$line"
+        done
+    else
+        # Status above 128 is a plain timeout; anything else means EOF.
+        (($? > 128)) || MPG123_ENDED=1
+    fi
+
+    ((MPG123_ENDED == 0))
+}
+
+player_start() {
+    if [[ "$PLAYER_BACKEND" == "mpg123" ]]; then
+        mpg123_start
+    else
+        termux-media-player play "$MUSIC_FILE" >/dev/null 2>&1 ||
+            die "termux-media-player could not start playback."
+    fi
+}
+
+player_stop() {
+    if [[ "$PLAYER_BACKEND" == "mpg123" ]]; then
+        mpg123_stop
+    else
+        termux-media-player stop >/dev/null 2>&1 || true
+    fi
+}
+
 read_player_info() {
+    if [[ "$PLAYER_BACKEND" == "mpg123" ]]; then
+        mpg123_read_info
+    else
+        termux_read_player_info
+    fi
+}
+
+termux_read_player_info() {
     local info position
     info="$(termux-media-player info 2>/dev/null || true)"
     [[ -n "$info" && "$info" != No\ track* ]] || return 1
@@ -927,7 +1106,7 @@ print_metadata() {
 }
 
 cleanup() {
-    termux-media-player stop >/dev/null 2>&1 || true
+    player_stop
 }
 
 main() {
@@ -942,24 +1121,32 @@ main() {
         return 0
     fi
 
-    check_playback_dependency
+    resolve_player
     read_metadata
     resolve_offset
     prepare_lyrics
     parse_lrc
 
-    termux-media-player play "$MUSIC_FILE" >/dev/null 2>&1 ||
-        die "termux-media-player could not start playback."
+    player_start
 
     local metadata_printed=0
-    local effective_ms lyric_index delta i
+    local effective_ms lyric_index delta i ready
 
     while :; do
         if ! read_player_info; then
             break
         fi
 
+        # mpg123 reports the length with its first position update, which can
+        # arrive just after the "playing" status, so wait for it.
+        ready=0
         if [[ "$PLAYER_STATUS" == "Playing" ]]; then
+            if [[ "$PLAYER_BACKEND" != "mpg123" ]] || ((PLAYER_DURATION_MS > 0)); then
+                ready=1
+            fi
+        fi
+
+        if ((ready)); then
             if ((metadata_printed == 0)); then
                 print_metadata
                 metadata_printed=1
@@ -990,7 +1177,8 @@ main() {
             LAST_POSITION_MS="$PLAYER_POSITION_MS"
         fi
 
-        sleep "$POLL_INTERVAL"
+        # mpg123 already waits inside read_player_info.
+        [[ "$PLAYER_BACKEND" == "mpg123" ]] || sleep "$POLL_INTERVAL"
     done
 }
 
