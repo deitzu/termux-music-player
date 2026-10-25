@@ -93,7 +93,24 @@ Override subtitle timing for one run:
 music ~/Music/song.mp3 --offset -300
 ~~~
 
+Force a manual LRCLIB selection when the automatic match is missing or suspicious:
+
+~~~bash
+music ~/Music/song.mp3 --select-lyrics
+~~~
+
 Positive offsets delay subtitles. Negative offsets make them appear earlier.
+
+`--select-lyrics` lists LRCLIB results that contain synced lyrics and lets you
+choose the correct track. The selected lyrics replace the local cache for that
+track, and this option bypasses an existing lyric cache so you can correct a
+wrong match. Enter `0` to cancel. It is intended for interactive single-track
+playback and cannot be combined with `--fetch-all`.
+
+Automatic lookup still tries LRCLIB's direct metadata endpoint first. Its fuzzy
+search fallback only accepts a result when both the normalized title and artist
+match; it no longer blindly caches the first unrelated result. When no confident
+match is found, use `--select-lyrics` to choose from the candidates.
 
 When `--offset` is explicitly supplied, that value is saved per track. A later run without `--offset` reuses the saved value for that track; when no saved value exists, the global `SUBTITLE_OFFSET_MS` from the config is used.
 
