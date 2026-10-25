@@ -91,8 +91,8 @@ Options:
   --no-color       Same as --color never. NO_COLOR is also respected.
   --lyric-unit U   Highlight step: char (default), word or syllable.
   --lyric-style S  karaoke (default): sung part stays highlighted, the rest is dim.
-                   spotlight: only the unit being sung is highlighted, what was
-                   sung stays in a normal color, and what is next is not shown yet.
+                   spotlight: the whole sentence stays in a normal color and only
+                   the unit being sung is highlighted.
   --player NAME    Playback backend: auto (default), termux, or mpg123.
                    auto uses mpg123 for .mp3 when installed, otherwise
                    termux-media-player. mpg123 only plays mp3.
@@ -1430,12 +1430,13 @@ lyric_sweep_update() {
     ACTIVE_K="$u"
 
     if [[ "$LYRIC_STYLE" == "spotlight" ]]; then
-        # What was sung stays in the normal color, the unit being sung is
-        # highlighted, and the rest of the sentence is not shown yet.
-        printf '\r\e[2K%s▶ %s%s%s%s' \
+        # The whole sentence is shown in the normal color and only the unit
+        # being sung is highlighted. Nothing is held highlighted and nothing
+        # is dimmed ahead.
+        printf '\r\e[2K%s▶ %s%s%s%s%s%s' \
             "$C_DONE" "${ACTIVE_TEXT:0:UNIT_START[u]}" \
             "$C_HI" "${ACTIVE_TEXT:UNIT_START[u]:UNIT_END[u]-UNIT_START[u]}" \
-            "$C_RESET"
+            "$C_DONE" "${ACTIVE_TEXT:UNIT_END[u]}" "$C_RESET"
     else
         printf '\r\e[2K%s▶ %s%s%s%s' \
             "$C_HI" "${ACTIVE_TEXT:0:UNIT_END[u]}" \

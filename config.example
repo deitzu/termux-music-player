@@ -38,8 +38,9 @@ LYRIC_UNIT=char
 LYRIC_SYLLABLE_LANG=id
 
 # karaoke : the sung part stays highlighted and the rest is dim.
-# spotlight: only the unit being sung is highlighted. What was sung stays in
-#            the normal color and what is next is not shown yet.
+# spotlight: the whole sentence is shown in the normal color and only the unit
+#            being sung is highlighted. Nothing is held highlighted and
+#            nothing is dimmed ahead.
 LYRIC_STYLE=karaoke
 
 # 256-color codes (0-255): the sung part, the part still to come, and

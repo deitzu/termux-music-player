@@ -116,7 +116,7 @@ Two settings change how the highlight moves:
 | Setting | Values | Meaning |
 |---|---|---|
 | `LYRIC_UNIT` / `--lyric-unit` | `char` (default), `word`, `syllable` | What the highlight steps by. `syllable` splits words like `din-da ja-ngan ma-rah`. |
-| `LYRIC_STYLE` / `--lyric-style` | `karaoke` (default), `spotlight` | `karaoke`: the sung part stays highlighted and the rest is dim. `spotlight`: only the unit being sung is highlighted, what was sung stays in the normal color, and what is next is not shown yet. |
+| `LYRIC_STYLE` / `--lyric-style` | `karaoke` (default), `spotlight` | `karaoke`: the sung part stays highlighted and the rest is dim. `spotlight`: the whole sentence is shown in the normal color and only the unit being sung is highlighted, with nothing held highlighted and nothing dimmed ahead. |
 
 ~~~bash
 music song.mp3 --lyric-unit syllable --lyric-style spotlight
