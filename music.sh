@@ -1091,6 +1091,12 @@ print_metadata() {
     echo "  Album  : $ALBUM"
     echo "  Length : $DURATION_DISPLAY"
 
+    if [[ "$PLAYER_BACKEND" == "mpg123" ]]; then
+        echo "  Player : mpg123"
+    else
+        echo "  Player : termux-media-player"
+    fi
+
     if ((SUBTITLE_OFFSET_MS > 0)); then
         echo "  Offset : +$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     else
