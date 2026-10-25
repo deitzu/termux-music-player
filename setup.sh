@@ -36,36 +36,48 @@ while (($# > 0)); do
     esac
 done
 
-if [[ -z "$PREFIX" || "$PREFIX" != /data/data/com.termux/files/usr ]]; then
+if [[ "${PREFIX:-}" != /data/data/com.termux/files/usr ]]; then
     echo "Error: this setup script is intended for Termux." >&2
     exit 1
 fi
 
+CORE_COMMANDS="curl jq sha256sum awk sed dd od cut head wc mktemp find tr cp mkdir dirname grep readlink"
+
+find_missing() {
+    local command
+    missing=""
+    for command in $CORE_COMMANDS; do
+        command -v "$command" >/dev/null 2>&1 || missing="$missing $command"
+    done
+}
+
 if ((install_deps)); then
     echo "Installing lightweight dependencies..."
-    pkg install -y curl jq coreutils
+    pkg install -y curl jq coreutils findutils grep sed gawk
 else
     echo "Checking dependencies..."
 fi
 
-missing=""
-for command in termux-media-player curl jq sha256sum awk sed dd od cut head wc mktemp find tr cp mkdir dirname grep readlink; do
-    if ! command -v "$command" >/dev/null 2>&1; then
-        missing="$missing $command"
-    fi
-done
+find_missing
 
 if [[ -n "$missing" ]]; then
     echo "Missing:$missing"
-    echo "Run: bash setup.sh --install-deps"
+    if ((install_deps)); then
+        echo "These are still missing after pkg install. Try: pkg update && bash setup.sh --install-deps"
+    else
+        echo "Run: bash setup.sh --install-deps"
+    fi
     exit 1
 fi
 
+# The playback backend is checked separately: --install-deps cannot provide
+# it on every Termux build, so it needs its own, accurate hint.
 if ! command -v termux-media-player >/dev/null 2>&1; then
     echo
     echo "termux-media-player is unavailable."
-    echo "On non-Play Termux builds, install the Termux:API integration."
-    echo "On recent Google Play Termux builds, it should be available in Termux."
+    echo "Install the termux-api package (pkg install termux-api) and the"
+    echo "Termux:API app from the same source as your Termux build"
+    echo "(F-Droid with F-Droid, GitHub with GitHub)."
     exit 1
 fi
 
