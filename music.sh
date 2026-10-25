@@ -1165,6 +1165,22 @@ init_colors() {
         *) die "COLOR must be auto, always or never (got: $COLOR)." ;;
     esac
 
+    [[ "$LYRIC_SWEEP_MAX_MS" =~ ^[0-9]+$ ]] ||
+        die "LYRIC_SWEEP_MAX_MS must be an integer."
+    case "$LYRIC_UNIT" in
+        char|word|syllable) ;;
+        *) die "LYRIC_UNIT must be char, word or syllable (got: $LYRIC_UNIT)." ;;
+    esac
+    case "$LYRIC_STYLE" in
+        karaoke|spotlight) ;;
+        *) die "LYRIC_STYLE must be karaoke or spotlight (got: $LYRIC_STYLE)." ;;
+    esac
+    case "$LYRIC_SYLLABLE_LANG" in
+        id|en) ;;
+        *) die "LYRIC_SYLLABLE_LANG must be id or en (got: $LYRIC_SYLLABLE_LANG)." ;;
+    esac
+
+
     SWEEP=0
     ((use)) || return 0
 
@@ -1186,21 +1202,6 @@ init_colors() {
     C_HI=$'\e[1;38;5;'"${LYRIC_HI_COLOR}m"
     C_LO=$'\e[2;38;5;'"${LYRIC_LO_COLOR}m"
     C_DONE=$'\e[38;5;'"${LYRIC_DONE_COLOR}m"
-
-    [[ "$LYRIC_SWEEP_MAX_MS" =~ ^[0-9]+$ ]] ||
-        die "LYRIC_SWEEP_MAX_MS must be an integer."
-    case "$LYRIC_UNIT" in
-        char|word|syllable) ;;
-        *) die "LYRIC_UNIT must be char, word or syllable (got: $LYRIC_UNIT)." ;;
-    esac
-    case "$LYRIC_STYLE" in
-        karaoke|spotlight) ;;
-        *) die "LYRIC_STYLE must be karaoke or spotlight (got: $LYRIC_STYLE)." ;;
-    esac
-    case "$LYRIC_SYLLABLE_LANG" in
-        id|en) ;;
-        *) die "LYRIC_SYLLABLE_LANG must be id or en (got: $LYRIC_SYLLABLE_LANG)." ;;
-    esac
 
     # The in-place sweep needs a real terminal; with --color always on a
     # pipe the lines are just printed in the highlight color.
