@@ -104,7 +104,7 @@ Available options:
 | --lyric-style spotlight | Show the whole sentence normally and highlight only the currently active unit. |
 | --fetch-all DIR | Fetch and cache lyrics for all supported music files in DIR without playing them. Defaults to ~/Music. |
 | --force | With --fetch-all, fetch again even if the lyric cache exists. |
-| --select-lyrics | Let the user choose a synced LRCLIB result manually and replace this track's cache. |
+| --select-lyrics | Edit the title/artist/album sent to LRCLIB, choose synced lyrics, and replace this track's cache. |
 
 ### Select a lyric manually
 
