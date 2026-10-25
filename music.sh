@@ -138,7 +138,9 @@ Cache directories:
 
 Run music-clone --help for music-cloner options.
 EOF
-}die() {
+}
+
+die() {
     echo "Error: $*" >&2
     exit 1
 }
