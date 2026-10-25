@@ -18,6 +18,9 @@ POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
 COLOR="auto"
 LYRIC_SWEEP=1
+LYRIC_UNIT="char"
+LYRIC_STYLE="karaoke"
+LYRIC_SYLLABLE_LANG="id"
 LYRIC_SWEEP_MAX_MS=5000
 LYRIC_HI_COLOR=87
 LYRIC_LO_COLOR=240
@@ -39,6 +42,12 @@ ACTIVE_INDEX=-1
 ACTIVE_TEXT=""
 ACTIVE_K=-1
 ACTIVE_SWEEPABLE=0
+UNIT_N=0
+UNIT_TOTAL=0
+declare -a UNIT_START=()
+declare -a UNIT_END=()
+declare -a UNIT_CUM=()
+declare -a SYL_CUTS=()
 LAST_RAW_POS_MS=-1
 CLOCK_AT_CHANGE_MS=0
 PLAYER="auto"
@@ -80,6 +89,10 @@ Options:
                    Explicit values are remembered for this track.
   --color MODE     Colors: auto (default, only on a terminal), always, never.
   --no-color       Same as --color never. NO_COLOR is also respected.
+  --lyric-unit U   Highlight step: char (default), word or syllable.
+  --lyric-style S  karaoke (default): sung part stays highlighted, the rest is dim.
+                   spotlight: only the unit being sung is highlighted, what was
+                   sung stays in a normal color, and what is next is not shown yet.
   --player NAME    Playback backend: auto (default), termux, or mpg123.
                    auto uses mpg123 for .mp3 when installed, otherwise
                    termux-media-player. mpg123 only plays mp3.
@@ -156,6 +169,24 @@ parse_args() {
                 ;;
             --no-color)
                 COLOR="never"
+                shift
+                ;;
+            --lyric-unit)
+                (($# >= 2)) || die "--lyric-unit requires a value."
+                LYRIC_UNIT="$2"
+                shift 2
+                ;;
+            --lyric-unit=*)
+                LYRIC_UNIT="${1#--lyric-unit=}"
+                shift
+                ;;
+            --lyric-style)
+                (($# >= 2)) || die "--lyric-style requires a value."
+                LYRIC_STYLE="$2"
+                shift 2
+                ;;
+            --lyric-style=*)
+                LYRIC_STYLE="${1#--lyric-style=}"
                 shift
                 ;;
             --player)
@@ -1158,6 +1189,18 @@ init_colors() {
 
     [[ "$LYRIC_SWEEP_MAX_MS" =~ ^[0-9]+$ ]] ||
         die "LYRIC_SWEEP_MAX_MS must be an integer."
+    case "$LYRIC_UNIT" in
+        char|word|syllable) ;;
+        *) die "LYRIC_UNIT must be char, word or syllable (got: $LYRIC_UNIT)." ;;
+    esac
+    case "$LYRIC_STYLE" in
+        karaoke|spotlight) ;;
+        *) die "LYRIC_STYLE must be karaoke or spotlight (got: $LYRIC_STYLE)." ;;
+    esac
+    case "$LYRIC_SYLLABLE_LANG" in
+        id|en) ;;
+        *) die "LYRIC_SYLLABLE_LANG must be id or en (got: $LYRIC_SYLLABLE_LANG)." ;;
+    esac
 
     # The in-place sweep needs a real terminal; with --color always on a
     # pipe the lines are just printed in the highlight color.
@@ -1194,6 +1237,130 @@ lyric_finalize_active() {
     ACTIVE_K=-1
 }
 
+# Rough syllable splitter for Latin-script lyrics, tuned for Indonesian
+# (ng, ny, sy, kh count as one consonant; ai, au, oi as one vowel):
+#   din-da  ja-ngan  ma-rah
+# With LYRIC_SYLLABLE_LANG=en a silent final "e" is ignored (love, make).
+# It is a heuristic, so unusual words may be split in the wrong place.
+# Sets SYL_CUTS to the character offsets inside the word where a new syllable
+# starts.
+syllable_cuts() {
+    local word="$1" lower="${1,,}" n="${#1}" i=0 t=0 j c prev_v=-1
+    local ch pair core vowels=0
+    local -a kind=() tend=()
+
+    SYL_CUTS=()
+
+    while ((i < n)); do
+        ch="${lower:i:1}"
+        pair="${lower:i:2}"
+        if [[ "$ch" == [aeiou] ]]; then
+            kind[t]="V"
+            if [[ "$LYRIC_SYLLABLE_LANG" == "id" && "$pair" == @(ai|au|oi) ]]; then
+                tend[t]=$((i + 2)); i=$((i + 2))
+            else
+                tend[t]=$((i + 1)); i=$((i + 1))
+            fi
+            t=$((t + 1))
+        elif [[ "$ch" == [[:alpha:]] ]]; then
+            kind[t]="C"
+            if [[ "$LYRIC_SYLLABLE_LANG" == "id" && "$pair" == @(ng|ny|sy|kh) ]]; then
+                tend[t]=$((i + 2)); i=$((i + 2))
+            else
+                tend[t]=$((i + 1)); i=$((i + 1))
+            fi
+            t=$((t + 1))
+        else
+            # Punctuation and digits stay with the previous token.
+            if ((t > 0)); then
+                tend[t - 1]=$((i + 1))
+            fi
+            i=$((i + 1))
+        fi
+    done
+
+    for ((j = 0; j < t; j++)); do
+        if [[ "${kind[j]}" == "V" ]]; then
+            vowels=$((vowels + 1))
+        fi
+    done
+
+    if [[ "$LYRIC_SYLLABLE_LANG" == "en" ]] && ((t >= 2 && vowels > 1)); then
+        core="${lower%"${lower##*[[:alpha:]]}"}"
+        if [[ "$core" == *e && "${kind[t - 1]}" == "V" && "${kind[t - 2]}" == "C" ]]; then
+            if [[ "$core" != *[!aeiou]le ]]; then
+                kind[t - 1]="C"
+            fi
+        fi
+    fi
+
+    for ((j = 0; j < t; j++)); do
+        [[ "${kind[j]}" == "V" ]] || continue
+        if ((prev_v >= 0)); then
+            c=$((j - prev_v - 1))
+            if ((c >= 2)); then
+                SYL_CUTS+=("${tend[prev_v + 1]}")
+            else
+                SYL_CUTS+=("${tend[prev_v]}")
+            fi
+        fi
+        prev_v="$j"
+    done
+}
+
+add_unit() {
+    UNIT_START[UNIT_N]="$1"
+    UNIT_END[UNIT_N]="$2"
+    UNIT_TOTAL=$((UNIT_TOTAL + $2 - $1))
+    UNIT_CUM[UNIT_N]="$UNIT_TOTAL"
+    UNIT_N=$((UNIT_N + 1))
+}
+
+# Splits a sentence into the units that get highlighted one after another
+# (letters, words or syllables). A unit's share of the sentence's time is
+# proportional to its length.
+build_units() {
+    local text="$1" len="${#1}" i=0 start prev cut
+
+    UNIT_START=()
+    UNIT_END=()
+    UNIT_CUM=()
+    UNIT_N=0
+    UNIT_TOTAL=0
+
+    if [[ "$LYRIC_UNIT" == "char" ]]; then
+        for ((i = 0; i < len; i++)); do
+            add_unit "$i" "$((i + 1))"
+        done
+        return 0
+    fi
+
+    while ((i < len)); do
+        if [[ "${text:i:1}" == [[:space:]] ]]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        start="$i"
+        while ((i < len)) && [[ "${text:i:1}" != [[:space:]] ]]; do
+            i=$((i + 1))
+        done
+
+        if [[ "$LYRIC_UNIT" == "word" ]]; then
+            add_unit "$start" "$i"
+            continue
+        fi
+
+        syllable_cuts "${text:start:i-start}"
+        prev=0
+        for cut in ${SYL_CUTS[@]+"${SYL_CUTS[@]}"}; do
+            add_unit "$((start + prev))" "$((start + cut))"
+            prev="$cut"
+        done
+        add_unit "$((start + prev))" "$i"
+    done
+}
+
 lyric_activate() {
     local index="$1" text
     text="$(lyric_trim "${LYRIC_TEXTS[$index]}")"
@@ -1215,6 +1382,7 @@ lyric_activate() {
     # shown highlighted without the sweep.
     if (( ${#text} + 4 < TERM_COLS )); then
         ACTIVE_SWEEPABLE=1
+        build_units "$text"
     else
         ACTIVE_SWEEPABLE=0
     fi
@@ -1222,10 +1390,9 @@ lyric_activate() {
 
 lyric_sweep_update() {
     local position_ms="$1"
-    local start span next len k
+    local start span next elapsed target u
 
     ((ACTIVE_INDEX >= 0)) || return 0
-    len="${#ACTIVE_TEXT}"
 
     if ((ACTIVE_SWEEPABLE == 0)); then
         if ((ACTIVE_K < 0)); then
@@ -1234,6 +1401,8 @@ lyric_sweep_update() {
         fi
         return 0
     fi
+
+    ((UNIT_N > 0)) || return 0
 
     start="${LYRIC_TIMES[$ACTIVE_INDEX]}"
     next=$((ACTIVE_INDEX + 1))
@@ -1245,15 +1414,32 @@ lyric_sweep_update() {
     ((span <= LYRIC_SWEEP_MAX_MS)) || span="$LYRIC_SWEEP_MAX_MS"
     ((span >= 300)) || span=300
 
-    k=$((len * (position_ms - start) / span))
-    ((k >= 0)) || k=0
-    ((k <= len)) || k="$len"
+    elapsed=$((position_ms - start))
+    ((elapsed >= 0)) || elapsed=0
+    target=$((UNIT_TOTAL * elapsed / span))
 
-    ((k != ACTIVE_K)) || return 0
-    ACTIVE_K="$k"
+    # The unit being sung is the first one whose end is past the target.
+    for ((u = 0; u < UNIT_N - 1; u++)); do
+        if ((UNIT_CUM[u] > target)); then
+            break
+        fi
+    done
 
-    printf '\r\e[2K%s▶ %s%s%s%s' \
-        "$C_HI" "${ACTIVE_TEXT:0:k}" "$C_LO" "${ACTIVE_TEXT:k}" "$C_RESET"
+    ((u != ACTIVE_K)) || return 0
+    ACTIVE_K="$u"
+
+    if [[ "$LYRIC_STYLE" == "spotlight" ]]; then
+        # What was sung stays in the normal color, the unit being sung is
+        # highlighted, and the rest of the sentence is not shown yet.
+        printf '\r\e[2K%s▶ %s%s%s%s' \
+            "$C_DONE" "${ACTIVE_TEXT:0:UNIT_START[u]}" \
+            "$C_HI" "${ACTIVE_TEXT:UNIT_START[u]:UNIT_END[u]-UNIT_START[u]}" \
+            "$C_RESET"
+    else
+        printf '\r\e[2K%s▶ %s%s%s%s' \
+            "$C_HI" "${ACTIVE_TEXT:0:UNIT_END[u]}" \
+            "$C_LO" "${ACTIVE_TEXT:UNIT_END[u]}" "$C_RESET"
+    fi
 }
 
 print_field() {

@@ -31,6 +31,17 @@ COLOR=auto
 LYRIC_SWEEP=1
 LYRIC_SWEEP_MAX_MS=5000
 
+# What the highlight moves by: char (letter by letter, default), word, or
+# syllable (din-da ja-ngan ma-rah). Syllables are split by a rough rule set
+# made for Indonesian; LYRIC_SYLLABLE_LANG=en also ignores a silent final "e".
+LYRIC_UNIT=char
+LYRIC_SYLLABLE_LANG=id
+
+# karaoke : the sung part stays highlighted and the rest is dim.
+# spotlight: only the unit being sung is highlighted. What was sung stays in
+#            the normal color and what is next is not shown yet.
+LYRIC_STYLE=karaoke
+
 # 256-color codes (0-255): the sung part, the part still to come, and
 # sentences that are already done.
 LYRIC_HI_COLOR=87

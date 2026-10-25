@@ -109,6 +109,21 @@ The track info is colored when output goes to a terminal.
 
 The sentence that is being sung is highlighted in place: the part already sung is bright and the rest is dim, sweeping from left to right with the music. When the next sentence starts, the finished one stays above in a quieter color. An LRC file only has one timestamp per sentence, so the sweep inside a sentence is an estimate spread over the time until the next one (at most `LYRIC_SWEEP_MAX_MS`), not real per-word timing.
 
+### Highlight unit and style
+
+Two settings change how the highlight moves:
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `LYRIC_UNIT` / `--lyric-unit` | `char` (default), `word`, `syllable` | What the highlight steps by. `syllable` splits words like `din-da ja-ngan ma-rah`. |
+| `LYRIC_STYLE` / `--lyric-style` | `karaoke` (default), `spotlight` | `karaoke`: the sung part stays highlighted and the rest is dim. `spotlight`: only the unit being sung is highlighted, what was sung stays in the normal color, and what is next is not shown yet. |
+
+~~~bash
+music song.mp3 --lyric-unit syllable --lyric-style spotlight
+~~~
+
+Syllables are split with a rough rule set made for Indonesian (`ng`, `ny`, `sy`, `kh` count as one consonant, `ai`, `au`, `oi` as one vowel), so unusual words may be split in the wrong place. For English lyrics set `LYRIC_SYLLABLE_LANG=en`, which also ignores a silent final `e` (it is still only a guess). Each unit gets a share of the sentence's time proportional to its length.
+
 Because `termux-media-player` only reports whole seconds, the position is advanced with the local clock between its updates, so the sweep and the lyric timing do not move in one-second steps.
 
 ~~~bash
