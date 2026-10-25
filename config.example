@@ -11,3 +11,10 @@ POLL_INTERVAL=0.20
 
 # Maximum seconds for an LRCLIB request.
 LRCLIB_TIMEOUT=15
+
+# Playback backend: auto, termux or mpg123.
+# auto plays .mp3 with mpg123 when it is installed (pkg install mpg123,
+# about 55 MB with dependencies) and everything else with termux-media-player.
+# mpg123 runs inside Termux itself and reports the position in fractions of a
+# second, so lyrics sync more smoothly. It only plays mp3.
+PLAYER=auto

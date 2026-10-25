@@ -103,6 +103,21 @@ Per-track offset cache:
 ~/.cache/termux-music-player/offsets/
 ~~~
 
+## Player backends
+
+Two backends are supported:
+
+- `termux-media-player` (default for everything). Runs inside the Termux:API app, so Android can stop it without warning, and it only reports the position in whole seconds.
+- `mpg123` (mp3 only, optional). Runs inside Termux, reports the position in fractions of a second and does not depend on the Termux:API app. Install it with `pkg install mpg123` (about 55 MB including `pulseaudio`).
+
+`PLAYER=auto` (the default) picks `mpg123` for `.mp3` files when it is installed and `termux-media-player` otherwise. Force one with `PLAYER=` in the config or `--player` on the command line:
+
+~~~bash
+music ~/Music/song.mp3 --player mpg123
+~~~
+
+mpv and VLC were considered but pull hundreds of megabytes of dependencies on Termux (about 850 MB for mpv), so they are not used.
+
 ## How it works
 
 The player first reads metadata and prepares lyrics. It then starts the local file through termux-media-player and polls its playback information.
