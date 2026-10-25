@@ -16,6 +16,40 @@ OFFSET_EXPLICIT=0
 OFFSET_SOURCE="config"
 POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
+COLOR="auto"
+LYRIC_SWEEP=1
+LYRIC_UNIT="char"
+LYRIC_STYLE="karaoke"
+LYRIC_SYLLABLE_LANG="id"
+LYRIC_SWEEP_MAX_MS=5000
+LYRIC_HI_COLOR=87
+LYRIC_LO_COLOR=240
+LYRIC_DONE_COLOR=250
+C_RESET=""
+C_BOLD=""
+C_DIM=""
+C_TITLE=""
+C_VALUE=""
+C_GOOD=""
+C_BAD=""
+C_RULE=""
+C_HI=""
+C_LO=""
+C_DONE=""
+SWEEP=0
+TERM_COLS=80
+ACTIVE_INDEX=-1
+ACTIVE_TEXT=""
+ACTIVE_K=-1
+ACTIVE_SWEEPABLE=0
+UNIT_N=0
+UNIT_TOTAL=0
+declare -a UNIT_START=()
+declare -a UNIT_END=()
+declare -a UNIT_CUM=()
+declare -a SYL_CUTS=()
+LAST_RAW_POS_MS=-1
+CLOCK_AT_CHANGE_MS=0
 PLAYER="auto"
 PLAYER_BACKEND=""
 MPG123_STARTED=0
@@ -45,41 +79,63 @@ declare -a LYRIC_TEXTS=()
 usage() {
     cat <<'EOF'
 Usage:
-  termux-music-player <music-file> [--offset <milliseconds>]
-  termux-music-player <music-file> [--offset=<milliseconds>]
-  termux-music-player <music-file> [--player auto|termux|mpg123]
+  termux-music-player <music-file> [options]
   termux-music-player --fetch-all [directory] [--force]
 
-Options:
-  --offset MS      Subtitle offset. Positive delays subtitles, negative advances them.
-                   Explicit values are remembered for this track.
-  --player NAME    Playback backend: auto (default), termux, or mpg123.
-                   auto uses mpg123 for .mp3 when installed, otherwise
-                   termux-media-player. mpg123 only plays mp3.
-  --fetch-all DIR  Fetch and cache synced lyrics for all music files under DIR.
-                   Defaults to ~/Music and does not play anything.
-  --force          Re-fetch lyrics even when a cache entry already exists.
-  -h, --help       Show this help.
+Playback options:
+  --offset MS       Subtitle offset in milliseconds. Positive delays, negative advances.
+                    An explicitly supplied value is saved for this track.
+  --player NAME     Playback backend: auto (default), termux, or mpg123.
+                    auto uses mpg123 for MP3 when installed; other files use termux-media-player.
+                    mpg123 supports MP3 only.
+  --color MODE      Color output: auto (default), always, or never.
+  --no-color        Disable colors and the in-place karaoke sweep. NO_COLOR is respected.
+  --lyric-unit UNIT Highlight step: char (default), word, or syllable.
+  --lyric-style STYLE
+                    karaoke (default): sung part is highlighted; upcoming text is dim.
+                    spotlight: the whole sentence is shown; only the active unit is highlighted.
+
+Bulk lyric options:
+  --fetch-all DIR   Fetch and cache synced LRCLIB lyrics for music under DIR.
+                    Defaults to ~/Music and does not start playback.
+  --force           With --fetch-all, fetch again even when a lyric cache exists.
+
+Other:
+  -h, --help        Show this help.
 
 Examples:
-  termux-music-player ~/Music/song.mp3
-  termux-music-player ~/Music/song.flac --offset 350
-  termux-music-player ~/Music/song.mp3
-  termux-music-player --fetch-all
-  termux-music-player --fetch-all ~/Music --force
+  music ~/Music/song.mp3
+  music ~/Music/song.mp3 --offset -300
+  music ~/Music/song.mp3 --player mpg123
+  music ~/Music/song.mp3 --lyric-unit syllable --lyric-style spotlight
+  music ~/Music/song.flac --color never
+  music --fetch-all
+  music --fetch-all ~/Music --force
 
-Config:
+Configuration:
   ~/.config/termux-music-player/config
+  Supported settings:
+    SUBTITLE_OFFSET_MS      Default subtitle offset in milliseconds (0)
+    POLL_INTERVAL           Playback polling interval in seconds (0.20)
+    LRCLIB_TIMEOUT          Maximum time per LRCLIB request in seconds (15)
+    PLAYER                  auto, termux, or mpg123 (auto)
+    COLOR                   auto, always, or never (auto)
+    LYRIC_SWEEP             1 to animate lyrics in a terminal, 0 to print each line once (1)
+    LYRIC_SWEEP_MAX_MS      Maximum estimated sweep duration per lyric line (5000)
+    LYRIC_UNIT              char, word, or syllable (char)
+    LYRIC_SYLLABLE_LANG     id or en for the syllable heuristic (id)
+    LYRIC_STYLE             karaoke or spotlight (karaoke)
+    LYRIC_HI_COLOR          256-color code for the active part (87)
+    LYRIC_LO_COLOR          256-color code for the upcoming part (240)
+    LYRIC_DONE_COLOR        256-color code for finished lines (250)
 
-Lyrics cache:
-  ~/.cache/termux-music-player/lyrics/
+Cache directories:
+  Lyrics:        ~/.cache/termux-music-player/lyrics/
+  Track offsets: ~/.cache/termux-music-player/offsets/
 
-Per-track offset cache:
-  ~/.cache/termux-music-player/offsets/
+Run music-clone --help for music-cloner options.
 EOF
-}
-
-die() {
+}die() {
     echo "Error: $*" >&2
     exit 1
 }
@@ -116,6 +172,37 @@ parse_args() {
             --offset=*)
                 SUBTITLE_OFFSET_MS="$(printf '%s\n' "$1" | sed 's/^--offset=//')"
                 OFFSET_EXPLICIT=1
+                shift
+                ;;
+            --color)
+                (($# >= 2)) || die "--color requires a value."
+                COLOR="$2"
+                shift 2
+                ;;
+            --color=*)
+                COLOR="${1#--color=}"
+                shift
+                ;;
+            --no-color)
+                COLOR="never"
+                shift
+                ;;
+            --lyric-unit)
+                (($# >= 2)) || die "--lyric-unit requires a value."
+                LYRIC_UNIT="$2"
+                shift 2
+                ;;
+            --lyric-unit=*)
+                LYRIC_UNIT="${1#--lyric-unit=}"
+                shift
+                ;;
+            --lyric-style)
+                (($# >= 2)) || die "--lyric-style requires a value."
+                LYRIC_STYLE="$2"
+                shift 2
+                ;;
+            --lyric-style=*)
+                LYRIC_STYLE="${1#--lyric-style=}"
                 shift
                 ;;
             --player)
@@ -1080,38 +1167,341 @@ find_lyric_index() {
     printf '%d\n' "$answer"
 }
 
-print_lyric_index() {
-    local index="$1"
-    printf '%s\n' "${LYRIC_TEXTS[$index]}"
+init_colors() {
+    local use=0 code name
+
+    case "$COLOR" in
+        always) use=1 ;;
+        never)  use=0 ;;
+        auto)
+            if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+                use=1
+            fi
+            ;;
+        *) die "COLOR must be auto, always or never (got: $COLOR)." ;;
+    esac
+
+    [[ "$LYRIC_SWEEP_MAX_MS" =~ ^[0-9]+$ ]] ||
+        die "LYRIC_SWEEP_MAX_MS must be an integer."
+    case "$LYRIC_UNIT" in
+        char|word|syllable) ;;
+        *) die "LYRIC_UNIT must be char, word or syllable (got: $LYRIC_UNIT)." ;;
+    esac
+    case "$LYRIC_STYLE" in
+        karaoke|spotlight) ;;
+        *) die "LYRIC_STYLE must be karaoke or spotlight (got: $LYRIC_STYLE)." ;;
+    esac
+    case "$LYRIC_SYLLABLE_LANG" in
+        id|en) ;;
+        *) die "LYRIC_SYLLABLE_LANG must be id or en (got: $LYRIC_SYLLABLE_LANG)." ;;
+    esac
+
+
+    SWEEP=0
+    ((use)) || return 0
+
+    C_RESET=$'\e[0m'
+    C_BOLD=$'\e[1m'
+    C_DIM=$'\e[2m'
+    C_TITLE=$'\e[1;38;5;229m'
+    C_VALUE=$'\e[38;5;252m'
+    C_GOOD=$'\e[38;5;114m'
+    C_BAD=$'\e[38;5;203m'
+    C_RULE=$'\e[2;38;5;244m'
+
+    for name in LYRIC_HI_COLOR LYRIC_LO_COLOR LYRIC_DONE_COLOR; do
+        code="${!name}"
+        [[ "$code" =~ ^[0-9]+$ ]] && ((code <= 255)) ||
+            die "$name must be a 256-color code (0-255), got: $code"
+    done
+
+    C_HI=$'\e[1;38;5;'"${LYRIC_HI_COLOR}m"
+    C_LO=$'\e[2;38;5;'"${LYRIC_LO_COLOR}m"
+    C_DONE=$'\e[38;5;'"${LYRIC_DONE_COLOR}m"
+
+    # The in-place sweep needs a real terminal; with --color always on a
+    # pipe the lines are just printed in the highlight color.
+    if ((LYRIC_SWEEP)) && [[ -t 1 ]]; then
+        SWEEP=1
+        TERM_COLS="$(tput cols 2>/dev/null || echo 80)"
+        [[ "$TERM_COLS" =~ ^[0-9]+$ ]] || TERM_COLS=80
+    fi
 }
+
+# Karaoke-style lyrics. The active sentence is redrawn in place: the part that
+# has been sung is bright, the rest is dim. LRC files only carry one timestamp
+# per sentence, so the sweep is an estimate spread over the time until the next
+# sentence (at most LYRIC_SWEEP_MAX_MS).
+lyric_trim() {
+    local text="$1"
+    printf '%s' "${text#"${text%%[![:space:]]*}"}"
+}
+
+print_done_line() {
+    local text
+    text="$(lyric_trim "${LYRIC_TEXTS[$1]}")"
+    if [[ -n "$text" ]]; then
+        printf '%s%s%s\n' "$C_DONE" "$text" "$C_RESET"
+    else
+        echo
+    fi
+}
+
+lyric_finalize_active() {
+    ((ACTIVE_INDEX >= 0)) || return 0
+    printf '\r\e[2K%s%s%s\n' "$C_DONE" "$ACTIVE_TEXT" "$C_RESET"
+    ACTIVE_INDEX=-1
+    ACTIVE_K=-1
+}
+
+# Rough syllable splitter for Latin-script lyrics, tuned for Indonesian
+# (ng, ny, sy, kh count as one consonant; ai, au, oi as one vowel):
+#   din-da  ja-ngan  ma-rah
+# With LYRIC_SYLLABLE_LANG=en a silent final "e" is ignored (love, make).
+# It is a heuristic, so unusual words may be split in the wrong place.
+# Sets SYL_CUTS to the character offsets inside the word where a new syllable
+# starts.
+syllable_cuts() {
+    local word="$1" lower="${1,,}" n="${#1}" i=0 t=0 j c prev_v=-1
+    local ch pair core vowels=0
+    local -a kind=() tend=()
+
+    SYL_CUTS=()
+
+    while ((i < n)); do
+        ch="${lower:i:1}"
+        pair="${lower:i:2}"
+        if [[ "$ch" == [aeiou] ]]; then
+            kind[t]="V"
+            if [[ "$LYRIC_SYLLABLE_LANG" == "id" && "$pair" == @(ai|au|oi) ]]; then
+                tend[t]=$((i + 2)); i=$((i + 2))
+            else
+                tend[t]=$((i + 1)); i=$((i + 1))
+            fi
+            t=$((t + 1))
+        elif [[ "$ch" == [[:alpha:]] ]]; then
+            kind[t]="C"
+            if [[ "$LYRIC_SYLLABLE_LANG" == "id" && "$pair" == @(ng|ny|sy|kh) ]]; then
+                tend[t]=$((i + 2)); i=$((i + 2))
+            else
+                tend[t]=$((i + 1)); i=$((i + 1))
+            fi
+            t=$((t + 1))
+        else
+            # Punctuation and digits stay with the previous token.
+            if ((t > 0)); then
+                tend[t - 1]=$((i + 1))
+            fi
+            i=$((i + 1))
+        fi
+    done
+
+    for ((j = 0; j < t; j++)); do
+        if [[ "${kind[j]}" == "V" ]]; then
+            vowels=$((vowels + 1))
+        fi
+    done
+
+    if [[ "$LYRIC_SYLLABLE_LANG" == "en" ]] && ((t >= 2 && vowels > 1)); then
+        core="${lower%"${lower##*[[:alpha:]]}"}"
+        if [[ "$core" == *e && "${kind[t - 1]}" == "V" && "${kind[t - 2]}" == "C" ]]; then
+            if [[ "$core" != *[!aeiou]le ]]; then
+                kind[t - 1]="C"
+            fi
+        fi
+    fi
+
+    for ((j = 0; j < t; j++)); do
+        [[ "${kind[j]}" == "V" ]] || continue
+        if ((prev_v >= 0)); then
+            c=$((j - prev_v - 1))
+            if ((c >= 2)); then
+                SYL_CUTS+=("${tend[prev_v + 1]}")
+            else
+                SYL_CUTS+=("${tend[prev_v]}")
+            fi
+        fi
+        prev_v="$j"
+    done
+}
+
+add_unit() {
+    UNIT_START[UNIT_N]="$1"
+    UNIT_END[UNIT_N]="$2"
+    UNIT_TOTAL=$((UNIT_TOTAL + $2 - $1))
+    UNIT_CUM[UNIT_N]="$UNIT_TOTAL"
+    UNIT_N=$((UNIT_N + 1))
+}
+
+# Splits a sentence into the units that get highlighted one after another
+# (letters, words or syllables). A unit's share of the sentence's time is
+# proportional to its length.
+build_units() {
+    local text="$1" len="${#1}" i=0 start prev cut
+
+    UNIT_START=()
+    UNIT_END=()
+    UNIT_CUM=()
+    UNIT_N=0
+    UNIT_TOTAL=0
+
+    if [[ "$LYRIC_UNIT" == "char" ]]; then
+        for ((i = 0; i < len; i++)); do
+            add_unit "$i" "$((i + 1))"
+        done
+        return 0
+    fi
+
+    while ((i < len)); do
+        if [[ "${text:i:1}" == [[:space:]] ]]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        start="$i"
+        while ((i < len)) && [[ "${text:i:1}" != [[:space:]] ]]; do
+            i=$((i + 1))
+        done
+
+        if [[ "$LYRIC_UNIT" == "word" ]]; then
+            add_unit "$start" "$i"
+            continue
+        fi
+
+        syllable_cuts "${text:start:i-start}"
+        prev=0
+        for cut in ${SYL_CUTS[@]+"${SYL_CUTS[@]}"}; do
+            add_unit "$((start + prev))" "$((start + cut))"
+            prev="$cut"
+        done
+        add_unit "$((start + prev))" "$i"
+    done
+}
+
+lyric_activate() {
+    local index="$1" text
+    text="$(lyric_trim "${LYRIC_TEXTS[$index]}")"
+
+    if [[ -z "$text" ]]; then
+        echo
+        return 0
+    fi
+
+    if ((SWEEP == 0)); then
+        printf '%s%s%s\n' "$C_HI" "$text" "$C_RESET"
+        return 0
+    fi
+
+    ACTIVE_INDEX="$index"
+    ACTIVE_TEXT="$text"
+    ACTIVE_K=-1
+    # A line wider than the screen would wrap and break the redraw, so it is
+    # shown highlighted without the sweep.
+    if (( ${#text} + 4 < TERM_COLS )); then
+        ACTIVE_SWEEPABLE=1
+        build_units "$text"
+    else
+        ACTIVE_SWEEPABLE=0
+    fi
+}
+
+lyric_sweep_update() {
+    local position_ms="$1"
+    local start span next elapsed target u
+
+    ((ACTIVE_INDEX >= 0)) || return 0
+
+    if ((ACTIVE_SWEEPABLE == 0)); then
+        if ((ACTIVE_K < 0)); then
+            printf '\r\e[2K%s▶ %s%s' "$C_HI" "$ACTIVE_TEXT" "$C_RESET"
+            ACTIVE_K=0
+        fi
+        return 0
+    fi
+
+    ((UNIT_N > 0)) || return 0
+
+    start="${LYRIC_TIMES[$ACTIVE_INDEX]}"
+    next=$((ACTIVE_INDEX + 1))
+    if ((next < LYRIC_COUNT)); then
+        span=$((LYRIC_TIMES[next] - start))
+    else
+        span="$LYRIC_SWEEP_MAX_MS"
+    fi
+    ((span <= LYRIC_SWEEP_MAX_MS)) || span="$LYRIC_SWEEP_MAX_MS"
+    ((span >= 300)) || span=300
+
+    elapsed=$((position_ms - start))
+    ((elapsed >= 0)) || elapsed=0
+    target=$((UNIT_TOTAL * elapsed / span))
+
+    # The unit being sung is the first one whose end is past the target.
+    for ((u = 0; u < UNIT_N - 1; u++)); do
+        if ((UNIT_CUM[u] > target)); then
+            break
+        fi
+    done
+
+    ((u != ACTIVE_K)) || return 0
+    ACTIVE_K="$u"
+
+    if [[ "$LYRIC_STYLE" == "spotlight" ]]; then
+        # The whole sentence is shown in the normal color and only the unit
+        # being sung is highlighted. Nothing is held highlighted and nothing
+        # is dimmed ahead.
+        printf '\r\e[2K%s▶ %s%s%s%s%s%s' \
+            "$C_DONE" "${ACTIVE_TEXT:0:UNIT_START[u]}" \
+            "$C_HI" "${ACTIVE_TEXT:UNIT_START[u]:UNIT_END[u]-UNIT_START[u]}" \
+            "$C_DONE" "${ACTIVE_TEXT:UNIT_END[u]}" "$C_RESET"
+    else
+        printf '\r\e[2K%s▶ %s%s%s%s' \
+            "$C_HI" "${ACTIVE_TEXT:0:UNIT_END[u]}" \
+            "$C_LO" "${ACTIVE_TEXT:UNIT_END[u]}" "$C_RESET"
+    fi
+}
+
+print_field() {
+    printf '  %s%-7s%s %s%s%s\n' \
+        "$C_DIM" "$1" "$C_RESET" "${3:-$C_VALUE}" "$2" "$C_RESET"
+}
+
 print_metadata() {
-    echo
-    echo "▶ Playing: $TITLE"
-    echo "  Artist : $ARTIST"
-    echo "  Album  : $ALBUM"
-    echo "  Length : $DURATION_DISPLAY"
+    local player_name offset_text lyrics_text lyrics_color
 
     if [[ "$PLAYER_BACKEND" == "mpg123" ]]; then
-        echo "  Player : mpg123"
+        player_name="mpg123"
     else
-        echo "  Player : termux-media-player"
+        player_name="termux-media-player"
     fi
 
     if ((SUBTITLE_OFFSET_MS > 0)); then
-        echo "  Offset : +$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
+        offset_text="+$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     else
-        echo "  Offset : $SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
+        offset_text="$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     fi
 
     if [[ -n "$LYRICS_FILE" ]]; then
-        echo "  Lyrics : synced (LRCLIB)"
+        lyrics_text="synced (LRCLIB)"
+        lyrics_color="$C_GOOD"
     else
-        echo "  Lyrics : not found"
+        lyrics_text="not found"
+        lyrics_color="$C_BAD"
     fi
+
+    echo
+    printf '%s▶ %s%s\n' "$C_TITLE" "$TITLE" "$C_RESET"
+    print_field "Artist" "$ARTIST"
+    print_field "Album" "$ALBUM"
+    print_field "Length" "$DURATION_DISPLAY"
+    print_field "Player" "$player_name"
+    print_field "Offset" "$offset_text"
+    print_field "Lyrics" "$lyrics_text" "$lyrics_color"
+    printf '%s%s%s\n' "$C_RULE" "  ────────────────────────────" "$C_RESET"
     echo
 }
 
 cleanup() {
+    lyric_finalize_active
     player_stop
 }
 
@@ -1120,6 +1510,7 @@ main() {
 
     load_config
     parse_args "$@"
+    init_colors
     check_dependencies
 
     if ((FETCH_ALL)); then
@@ -1136,7 +1527,7 @@ main() {
     player_start
 
     local metadata_printed=0
-    local effective_ms lyric_index delta i ready
+    local effective_ms lyric_index delta i ready now_ms position_ms
 
     while :; do
         if ! read_player_info; then
@@ -1158,7 +1549,22 @@ main() {
                 metadata_printed=1
             fi
 
-            effective_ms=$((PLAYER_POSITION_MS - SUBTITLE_OFFSET_MS))
+            position_ms="$PLAYER_POSITION_MS"
+            # termux-media-player only reports whole seconds. Between two
+            # changes of its value, advance the position with the local clock
+            # so the lyrics (and the sweep) do not move in one-second steps.
+            if [[ "$PLAYER_BACKEND" != "mpg123" && -n "${EPOCHREALTIME:-}" ]]; then
+                now_ms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+                if ((PLAYER_POSITION_MS != LAST_RAW_POS_MS)); then
+                    LAST_RAW_POS_MS="$PLAYER_POSITION_MS"
+                    CLOCK_AT_CHANGE_MS="$now_ms"
+                fi
+                position_ms=$((PLAYER_POSITION_MS + now_ms - CLOCK_AT_CHANGE_MS))
+                ((position_ms <= PLAYER_POSITION_MS + 1000)) ||
+                    position_ms=$((PLAYER_POSITION_MS + 1000))
+            fi
+
+            effective_ms=$((position_ms - SUBTITLE_OFFSET_MS))
             lyric_index="$(find_lyric_index "$effective_ms")"
 
             if ((LAST_POSITION_MS >= 0 &&
@@ -1169,16 +1575,19 @@ main() {
             delta=$((lyric_index - CURRENT_INDEX))
 
             if ((lyric_index >= 0 && delta > 0)); then
-                if ((delta > 5)); then
-                    print_lyric_index "$lyric_index"
-                else
-                    for ((i=CURRENT_INDEX + 1; i<=lyric_index; i++)); do
-                        print_lyric_index "$i"
+                lyric_finalize_active
+
+                if ((delta <= 5)); then
+                    for ((i=CURRENT_INDEX + 1; i<lyric_index; i++)); do
+                        print_done_line "$i"
                     done
                 fi
 
+                lyric_activate "$lyric_index"
                 CURRENT_INDEX="$lyric_index"
             fi
+
+            lyric_sweep_update "$effective_ms"
 
             LAST_POSITION_MS="$PLAYER_POSITION_MS"
         fi
@@ -1186,6 +1595,8 @@ main() {
         # mpg123 already waits inside read_player_info.
         [[ "$PLAYER_BACKEND" == "mpg123" ]] || sleep "$POLL_INTERVAL"
     done
+
+    lyric_finalize_active
 }
 
 main "$@"

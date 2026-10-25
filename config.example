@@ -18,3 +18,33 @@ LRCLIB_TIMEOUT=15
 # mpg123 runs inside Termux itself and reports the position in fractions of a
 # second, so lyrics sync more smoothly. It only plays mp3.
 PLAYER=auto
+
+# Colors: auto (only when printing to a terminal and NO_COLOR is unset),
+# always, or never. Can also be set per run with --color / --no-color.
+COLOR=auto
+
+# Karaoke-style lyrics: the sentence being sung is redrawn in place and
+# highlighted from left to right as the song plays (needs a terminal).
+# LRC files only have one timestamp per sentence, so the sweep is an estimate
+# spread over the time until the next sentence, at most LYRIC_SWEEP_MAX_MS.
+# Set LYRIC_SWEEP=0 to print each sentence once instead.
+LYRIC_SWEEP=1
+LYRIC_SWEEP_MAX_MS=5000
+
+# What the highlight moves by: char (letter by letter, default), word, or
+# syllable (din-da ja-ngan ma-rah). Syllables are split by a rough rule set
+# made for Indonesian; LYRIC_SYLLABLE_LANG=en also ignores a silent final "e".
+LYRIC_UNIT=char
+LYRIC_SYLLABLE_LANG=id
+
+# karaoke : the sung part stays highlighted and the rest is dim.
+# spotlight: the whole sentence is shown in the normal color and only the unit
+#            being sung is highlighted. Nothing is held highlighted and
+#            nothing is dimmed ahead.
+LYRIC_STYLE=karaoke
+
+# 256-color codes (0-255): the sung part, the part still to come, and
+# sentences that are already done.
+LYRIC_HI_COLOR=87
+LYRIC_LO_COLOR=240
+LYRIC_DONE_COLOR=250
