@@ -79,47 +79,63 @@ declare -a LYRIC_TEXTS=()
 usage() {
     cat <<'EOF'
 Usage:
-  termux-music-player <music-file> [--offset <milliseconds>]
-  termux-music-player <music-file> [--offset=<milliseconds>]
-  termux-music-player <music-file> [--player auto|termux|mpg123]
+  termux-music-player <music-file> [options]
   termux-music-player --fetch-all [directory] [--force]
 
-Options:
-  --offset MS      Subtitle offset. Positive delays subtitles, negative advances them.
-                   Explicit values are remembered for this track.
-  --color MODE     Colors: auto (default, only on a terminal), always, never.
-  --no-color       Same as --color never. NO_COLOR is also respected.
-  --lyric-unit U   Highlight step: char (default), word or syllable.
-  --lyric-style S  karaoke (default): sung part stays highlighted, the rest is dim.
-                   spotlight: the whole sentence stays in a normal color and only
-                   the unit being sung is highlighted.
-  --player NAME    Playback backend: auto (default), termux, or mpg123.
-                   auto uses mpg123 for .mp3 when installed, otherwise
-                   termux-media-player. mpg123 only plays mp3.
-  --fetch-all DIR  Fetch and cache synced lyrics for all music files under DIR.
-                   Defaults to ~/Music and does not play anything.
-  --force          Re-fetch lyrics even when a cache entry already exists.
-  -h, --help       Show this help.
+Playback options:
+  --offset MS       Subtitle offset in milliseconds. Positive delays, negative advances.
+                    An explicitly supplied value is saved for this track.
+  --player NAME     Playback backend: auto (default), termux, or mpg123.
+                    auto uses mpg123 for MP3 when installed; other files use termux-media-player.
+                    mpg123 supports MP3 only.
+  --color MODE      Color output: auto (default), always, or never.
+  --no-color        Disable colors and the in-place karaoke sweep. NO_COLOR is respected.
+  --lyric-unit UNIT Highlight step: char (default), word, or syllable.
+  --lyric-style STYLE
+                    karaoke (default): sung part is highlighted; upcoming text is dim.
+                    spotlight: the whole sentence is shown; only the active unit is highlighted.
+
+Bulk lyric options:
+  --fetch-all DIR   Fetch and cache synced LRCLIB lyrics for music under DIR.
+                    Defaults to ~/Music and does not start playback.
+  --force           With --fetch-all, fetch again even when a lyric cache exists.
+
+Other:
+  -h, --help        Show this help.
 
 Examples:
-  termux-music-player ~/Music/song.mp3
-  termux-music-player ~/Music/song.flac --offset 350
-  termux-music-player ~/Music/song.mp3
-  termux-music-player --fetch-all
-  termux-music-player --fetch-all ~/Music --force
+  music ~/Music/song.mp3
+  music ~/Music/song.mp3 --offset -300
+  music ~/Music/song.mp3 --player mpg123
+  music ~/Music/song.mp3 --lyric-unit syllable --lyric-style spotlight
+  music ~/Music/song.flac --color never
+  music --fetch-all
+  music --fetch-all ~/Music --force
 
-Config:
+Configuration:
   ~/.config/termux-music-player/config
+  Supported settings:
+    SUBTITLE_OFFSET_MS      Default subtitle offset in milliseconds (0)
+    POLL_INTERVAL           Playback polling interval in seconds (0.20)
+    LRCLIB_TIMEOUT          Maximum time per LRCLIB request in seconds (15)
+    PLAYER                  auto, termux, or mpg123 (auto)
+    COLOR                   auto, always, or never (auto)
+    LYRIC_SWEEP             1 to animate lyrics in a terminal, 0 to print each line once (1)
+    LYRIC_SWEEP_MAX_MS      Maximum estimated sweep duration per lyric line (5000)
+    LYRIC_UNIT              char, word, or syllable (char)
+    LYRIC_SYLLABLE_LANG     id or en for the syllable heuristic (id)
+    LYRIC_STYLE             karaoke or spotlight (karaoke)
+    LYRIC_HI_COLOR          256-color code for the active part (87)
+    LYRIC_LO_COLOR          256-color code for the upcoming part (240)
+    LYRIC_DONE_COLOR        256-color code for finished lines (250)
 
-Lyrics cache:
-  ~/.cache/termux-music-player/lyrics/
+Cache directories:
+  Lyrics:        ~/.cache/termux-music-player/lyrics/
+  Track offsets: ~/.cache/termux-music-player/offsets/
 
-Per-track offset cache:
-  ~/.cache/termux-music-player/offsets/
+Run music-clone --help for music-cloner options.
 EOF
-}
-
-die() {
+}die() {
     echo "Error: $*" >&2
     exit 1
 }
