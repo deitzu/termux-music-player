@@ -16,6 +16,18 @@ OFFSET_EXPLICIT=0
 OFFSET_SOURCE="config"
 POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
+COLOR="auto"
+LYRIC_COLORS="81 213 222 120 183 215"
+C_RESET=""
+C_BOLD=""
+C_DIM=""
+C_TITLE=""
+C_VALUE=""
+C_GOOD=""
+C_BAD=""
+C_RULE=""
+declare -a LYRIC_PALETTE=()
+declare -a LYRIC_COLOR_SLOT=()
 PLAYER="auto"
 PLAYER_BACKEND=""
 MPG123_STARTED=0
@@ -53,6 +65,8 @@ Usage:
 Options:
   --offset MS      Subtitle offset. Positive delays subtitles, negative advances them.
                    Explicit values are remembered for this track.
+  --color MODE     Colors: auto (default, only on a terminal), always, never.
+  --no-color       Same as --color never. NO_COLOR is also respected.
   --player NAME    Playback backend: auto (default), termux, or mpg123.
                    auto uses mpg123 for .mp3 when installed, otherwise
                    termux-media-player. mpg123 only plays mp3.
@@ -116,6 +130,19 @@ parse_args() {
             --offset=*)
                 SUBTITLE_OFFSET_MS="$(printf '%s\n' "$1" | sed 's/^--offset=//')"
                 OFFSET_EXPLICIT=1
+                shift
+                ;;
+            --color)
+                (($# >= 2)) || die "--color requires a value."
+                COLOR="$2"
+                shift 2
+                ;;
+            --color=*)
+                COLOR="${1#--color=}"
+                shift
+                ;;
+            --no-color)
+                COLOR="never"
                 shift
                 ;;
             --player)
@@ -1010,10 +1037,11 @@ prepare_lyrics() {
 
 
 parse_lrc() {
-    local timestamp text
+    local timestamp text sentence_count=0
 
     LYRIC_TIMES=()
     LYRIC_TEXTS=()
+    LYRIC_COLOR_SLOT=()
     LYRIC_COUNT=0
     CURRENT_INDEX=-1
 
@@ -1022,6 +1050,12 @@ parse_lrc() {
     while IFS=$'\t' read -r timestamp text; do
         LYRIC_TIMES[LYRIC_COUNT]="$timestamp"
         LYRIC_TEXTS[LYRIC_COUNT]="$text"
+        # Blank entries (instrumental gaps) do not take a color slot, so the
+        # palette alternates between real sentences only.
+        LYRIC_COLOR_SLOT[LYRIC_COUNT]="$sentence_count"
+        if [[ -n "${text//[[:space:]]/}" ]]; then
+            sentence_count=$((sentence_count + 1))
+        fi
         LYRIC_COUNT=$((LYRIC_COUNT + 1))
     done < <(
         awk '
@@ -1080,34 +1114,95 @@ find_lyric_index() {
     printf '%d\n' "$answer"
 }
 
-print_lyric_index() {
-    local index="$1"
-    printf '%s\n' "${LYRIC_TEXTS[$index]}"
+init_colors() {
+    local use=0 code
+
+    case "$COLOR" in
+        always) use=1 ;;
+        never)  use=0 ;;
+        auto)
+            if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+                use=1
+            fi
+            ;;
+        *) die "COLOR must be auto, always or never (got: $COLOR)." ;;
+    esac
+
+    LYRIC_PALETTE=()
+    ((use)) || return 0
+
+    C_RESET=$'\e[0m'
+    C_BOLD=$'\e[1m'
+    C_DIM=$'\e[2m'
+    C_TITLE=$'\e[1;38;5;229m'
+    C_VALUE=$'\e[38;5;252m'
+    C_GOOD=$'\e[38;5;114m'
+    C_BAD=$'\e[38;5;203m'
+    C_RULE=$'\e[2;38;5;244m'
+
+    for code in $LYRIC_COLORS; do
+        [[ "$code" =~ ^[0-9]+$ ]] && ((code <= 255)) ||
+            die "LYRIC_COLORS must be 256-color codes (0-255), got: $code"
+        LYRIC_PALETTE+=("$code")
+    done
 }
+
+# One lyric entry is one sentence of the song. Each entry gets the next color
+# of the palette, so consecutive sentences are easy to tell apart. The color
+# slot is fixed per entry when the lyrics are parsed, so a sentence keeps its
+# color after a seek.
+print_lyric_index() {
+    local index="$1" text count
+    text="${LYRIC_TEXTS[$index]}"
+    count="${#LYRIC_PALETTE[@]}"
+
+    text="${text#"${text%%[![:space:]]*}"}"
+
+    if [[ -n "$text" ]] && ((count > 0)); then
+        printf '\e[38;5;%sm%s%s\n' \
+            "${LYRIC_PALETTE[${LYRIC_COLOR_SLOT[$index]} % count]}" "$text" "$C_RESET"
+    else
+        printf '%s\n' "$text"
+    fi
+}
+
+print_field() {
+    printf '  %s%-7s%s %s%s%s\n' \
+        "$C_DIM" "$1" "$C_RESET" "${3:-$C_VALUE}" "$2" "$C_RESET"
+}
+
 print_metadata() {
-    echo
-    echo "▶ Playing: $TITLE"
-    echo "  Artist : $ARTIST"
-    echo "  Album  : $ALBUM"
-    echo "  Length : $DURATION_DISPLAY"
+    local player_name offset_text lyrics_text lyrics_color
 
     if [[ "$PLAYER_BACKEND" == "mpg123" ]]; then
-        echo "  Player : mpg123"
+        player_name="mpg123"
     else
-        echo "  Player : termux-media-player"
+        player_name="termux-media-player"
     fi
 
     if ((SUBTITLE_OFFSET_MS > 0)); then
-        echo "  Offset : +$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
+        offset_text="+$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     else
-        echo "  Offset : $SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
+        offset_text="$SUBTITLE_OFFSET_MS ms ($OFFSET_SOURCE)"
     fi
 
     if [[ -n "$LYRICS_FILE" ]]; then
-        echo "  Lyrics : synced (LRCLIB)"
+        lyrics_text="synced (LRCLIB)"
+        lyrics_color="$C_GOOD"
     else
-        echo "  Lyrics : not found"
+        lyrics_text="not found"
+        lyrics_color="$C_BAD"
     fi
+
+    echo
+    printf '%s▶ %s%s\n' "$C_TITLE" "$TITLE" "$C_RESET"
+    print_field "Artist" "$ARTIST"
+    print_field "Album" "$ALBUM"
+    print_field "Length" "$DURATION_DISPLAY"
+    print_field "Player" "$player_name"
+    print_field "Offset" "$offset_text"
+    print_field "Lyrics" "$lyrics_text" "$lyrics_color"
+    printf '%s%s%s\n' "$C_RULE" "  ────────────────────────────" "$C_RESET"
     echo
 }
 
@@ -1120,6 +1215,7 @@ main() {
 
     load_config
     parse_args "$@"
+    init_colors
     check_dependencies
 
     if ((FETCH_ALL)); then

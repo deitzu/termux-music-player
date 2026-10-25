@@ -18,3 +18,11 @@ LRCLIB_TIMEOUT=15
 # mpg123 runs inside Termux itself and reports the position in fractions of a
 # second, so lyrics sync more smoothly. It only plays mp3.
 PLAYER=auto
+
+# Colors: auto (only when printing to a terminal and NO_COLOR is unset),
+# always, or never. Can also be set per run with --color / --no-color.
+COLOR=auto
+
+# 256-color codes (0-255) used in rotation for consecutive lyric sentences.
+# Examples: "81 213 222 120 183 215" (default), "196 46" (two colors).
+LYRIC_COLORS="81 213 222 120 183 215"

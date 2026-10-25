@@ -103,6 +103,17 @@ Per-track offset cache:
 ~/.cache/termux-music-player/offsets/
 ~~~
 
+## Colors
+
+The track info and the lyrics are colored when output goes to a terminal. Each lyric sentence takes the next color from a palette, so consecutive lines are easy to tell apart, and a sentence keeps its color after a seek. Instrumental gaps do not take a color.
+
+~~~bash
+music song.mp3 --no-color        # plain text
+music song.mp3 --color always    # keep colors when piping
+~~~
+
+`NO_COLOR` is respected. Set `COLOR=` and `LYRIC_COLORS="81 213 ..."` (256-color codes) in the config to change the defaults.
+
 ## Player backends
 
 Two backends are supported:
