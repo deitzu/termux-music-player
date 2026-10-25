@@ -103,16 +103,20 @@ Per-track offset cache:
 ~/.cache/termux-music-player/offsets/
 ~~~
 
-## Colors
+## Colors and karaoke lyrics
 
-The track info and the lyrics are colored when output goes to a terminal. Each lyric sentence takes the next color from a palette, so consecutive lines are easy to tell apart, and a sentence keeps its color after a seek. Instrumental gaps do not take a color.
+The track info is colored when output goes to a terminal.
+
+The sentence that is being sung is highlighted in place: the part already sung is bright and the rest is dim, sweeping from left to right with the music. When the next sentence starts, the finished one stays above in a quieter color. An LRC file only has one timestamp per sentence, so the sweep inside a sentence is an estimate spread over the time until the next one (at most `LYRIC_SWEEP_MAX_MS`), not real per-word timing.
+
+Because `termux-media-player` only reports whole seconds, the position is advanced with the local clock between its updates, so the sweep and the lyric timing do not move in one-second steps.
 
 ~~~bash
-music song.mp3 --no-color        # plain text
-music song.mp3 --color always    # keep colors when piping
+music song.mp3 --no-color        # plain text, no sweep
+music song.mp3 --color always    # keep colors when piping (no in-place sweep)
 ~~~
 
-`NO_COLOR` is respected. Set `COLOR=` and `LYRIC_COLORS="81 213 ..."` (256-color codes) in the config to change the defaults.
+`NO_COLOR` is respected. Sentences wider than the terminal are highlighted without the sweep. Set `LYRIC_SWEEP=0`, `LYRIC_HI_COLOR`, `LYRIC_LO_COLOR` and `LYRIC_DONE_COLOR` (256-color codes) in the config to change the defaults.
 
 ## Player backends
 

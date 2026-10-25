@@ -17,7 +17,11 @@ OFFSET_SOURCE="config"
 POLL_INTERVAL=0.20
 LRCLIB_TIMEOUT=15
 COLOR="auto"
-LYRIC_COLORS="81 213 222 120 183 215"
+LYRIC_SWEEP=1
+LYRIC_SWEEP_MAX_MS=5000
+LYRIC_HI_COLOR=87
+LYRIC_LO_COLOR=240
+LYRIC_DONE_COLOR=250
 C_RESET=""
 C_BOLD=""
 C_DIM=""
@@ -26,8 +30,17 @@ C_VALUE=""
 C_GOOD=""
 C_BAD=""
 C_RULE=""
-declare -a LYRIC_PALETTE=()
-declare -a LYRIC_COLOR_SLOT=()
+C_HI=""
+C_LO=""
+C_DONE=""
+SWEEP=0
+TERM_COLS=80
+ACTIVE_INDEX=-1
+ACTIVE_TEXT=""
+ACTIVE_K=-1
+ACTIVE_SWEEPABLE=0
+LAST_RAW_POS_MS=-1
+CLOCK_AT_CHANGE_MS=0
 PLAYER="auto"
 PLAYER_BACKEND=""
 MPG123_STARTED=0
@@ -1037,11 +1050,10 @@ prepare_lyrics() {
 
 
 parse_lrc() {
-    local timestamp text sentence_count=0
+    local timestamp text
 
     LYRIC_TIMES=()
     LYRIC_TEXTS=()
-    LYRIC_COLOR_SLOT=()
     LYRIC_COUNT=0
     CURRENT_INDEX=-1
 
@@ -1050,12 +1062,6 @@ parse_lrc() {
     while IFS=$'\t' read -r timestamp text; do
         LYRIC_TIMES[LYRIC_COUNT]="$timestamp"
         LYRIC_TEXTS[LYRIC_COUNT]="$text"
-        # Blank entries (instrumental gaps) do not take a color slot, so the
-        # palette alternates between real sentences only.
-        LYRIC_COLOR_SLOT[LYRIC_COUNT]="$sentence_count"
-        if [[ -n "${text//[[:space:]]/}" ]]; then
-            sentence_count=$((sentence_count + 1))
-        fi
         LYRIC_COUNT=$((LYRIC_COUNT + 1))
     done < <(
         awk '
@@ -1115,7 +1121,7 @@ find_lyric_index() {
 }
 
 init_colors() {
-    local use=0 code
+    local use=0 code name
 
     case "$COLOR" in
         always) use=1 ;;
@@ -1128,7 +1134,7 @@ init_colors() {
         *) die "COLOR must be auto, always or never (got: $COLOR)." ;;
     esac
 
-    LYRIC_PALETTE=()
+    SWEEP=0
     ((use)) || return 0
 
     C_RESET=$'\e[0m'
@@ -1140,30 +1146,114 @@ init_colors() {
     C_BAD=$'\e[38;5;203m'
     C_RULE=$'\e[2;38;5;244m'
 
-    for code in $LYRIC_COLORS; do
+    for name in LYRIC_HI_COLOR LYRIC_LO_COLOR LYRIC_DONE_COLOR; do
+        code="${!name}"
         [[ "$code" =~ ^[0-9]+$ ]] && ((code <= 255)) ||
-            die "LYRIC_COLORS must be 256-color codes (0-255), got: $code"
-        LYRIC_PALETTE+=("$code")
+            die "$name must be a 256-color code (0-255), got: $code"
     done
+
+    C_HI=$'\e[1;38;5;'"${LYRIC_HI_COLOR}m"
+    C_LO=$'\e[2;38;5;'"${LYRIC_LO_COLOR}m"
+    C_DONE=$'\e[38;5;'"${LYRIC_DONE_COLOR}m"
+
+    [[ "$LYRIC_SWEEP_MAX_MS" =~ ^[0-9]+$ ]] ||
+        die "LYRIC_SWEEP_MAX_MS must be an integer."
+
+    # The in-place sweep needs a real terminal; with --color always on a
+    # pipe the lines are just printed in the highlight color.
+    if ((LYRIC_SWEEP)) && [[ -t 1 ]]; then
+        SWEEP=1
+        TERM_COLS="$(tput cols 2>/dev/null || echo 80)"
+        [[ "$TERM_COLS" =~ ^[0-9]+$ ]] || TERM_COLS=80
+    fi
 }
 
-# One lyric entry is one sentence of the song. Each entry gets the next color
-# of the palette, so consecutive sentences are easy to tell apart. The color
-# slot is fixed per entry when the lyrics are parsed, so a sentence keeps its
-# color after a seek.
-print_lyric_index() {
-    local index="$1" text count
-    text="${LYRIC_TEXTS[$index]}"
-    count="${#LYRIC_PALETTE[@]}"
+# Karaoke-style lyrics. The active sentence is redrawn in place: the part that
+# has been sung is bright, the rest is dim. LRC files only carry one timestamp
+# per sentence, so the sweep is an estimate spread over the time until the next
+# sentence (at most LYRIC_SWEEP_MAX_MS).
+lyric_trim() {
+    local text="$1"
+    printf '%s' "${text#"${text%%[![:space:]]*}"}"
+}
 
-    text="${text#"${text%%[![:space:]]*}"}"
-
-    if [[ -n "$text" ]] && ((count > 0)); then
-        printf '\e[38;5;%sm%s%s\n' \
-            "${LYRIC_PALETTE[${LYRIC_COLOR_SLOT[$index]} % count]}" "$text" "$C_RESET"
+print_done_line() {
+    local text
+    text="$(lyric_trim "${LYRIC_TEXTS[$1]}")"
+    if [[ -n "$text" ]]; then
+        printf '%s%s%s\n' "$C_DONE" "$text" "$C_RESET"
     else
-        printf '%s\n' "$text"
+        echo
     fi
+}
+
+lyric_finalize_active() {
+    ((ACTIVE_INDEX >= 0)) || return 0
+    printf '\r\e[2K%s%s%s\n' "$C_DONE" "$ACTIVE_TEXT" "$C_RESET"
+    ACTIVE_INDEX=-1
+    ACTIVE_K=-1
+}
+
+lyric_activate() {
+    local index="$1" text
+    text="$(lyric_trim "${LYRIC_TEXTS[$index]}")"
+
+    if [[ -z "$text" ]]; then
+        echo
+        return 0
+    fi
+
+    if ((SWEEP == 0)); then
+        printf '%s%s%s\n' "$C_HI" "$text" "$C_RESET"
+        return 0
+    fi
+
+    ACTIVE_INDEX="$index"
+    ACTIVE_TEXT="$text"
+    ACTIVE_K=-1
+    # A line wider than the screen would wrap and break the redraw, so it is
+    # shown highlighted without the sweep.
+    if (( ${#text} + 4 < TERM_COLS )); then
+        ACTIVE_SWEEPABLE=1
+    else
+        ACTIVE_SWEEPABLE=0
+    fi
+}
+
+lyric_sweep_update() {
+    local position_ms="$1"
+    local start span next len k
+
+    ((ACTIVE_INDEX >= 0)) || return 0
+    len="${#ACTIVE_TEXT}"
+
+    if ((ACTIVE_SWEEPABLE == 0)); then
+        if ((ACTIVE_K < 0)); then
+            printf '\r\e[2K%s▶ %s%s' "$C_HI" "$ACTIVE_TEXT" "$C_RESET"
+            ACTIVE_K=0
+        fi
+        return 0
+    fi
+
+    start="${LYRIC_TIMES[$ACTIVE_INDEX]}"
+    next=$((ACTIVE_INDEX + 1))
+    if ((next < LYRIC_COUNT)); then
+        span=$((LYRIC_TIMES[next] - start))
+    else
+        span="$LYRIC_SWEEP_MAX_MS"
+    fi
+    ((span <= LYRIC_SWEEP_MAX_MS)) || span="$LYRIC_SWEEP_MAX_MS"
+    ((span >= 300)) || span=300
+
+    k=$((len * (position_ms - start) / span))
+    ((k >= 0)) || k=0
+    ((k <= len)) || k="$len"
+
+    ((k != ACTIVE_K)) || return 0
+    ACTIVE_K="$k"
+
+    printf '\r\e[2K%s▶ %s%s%s%s' \
+        "$C_HI" "${ACTIVE_TEXT:0:k}" "$C_LO" "${ACTIVE_TEXT:k}" "$C_RESET"
 }
 
 print_field() {
@@ -1207,6 +1297,7 @@ print_metadata() {
 }
 
 cleanup() {
+    lyric_finalize_active
     player_stop
 }
 
@@ -1232,7 +1323,7 @@ main() {
     player_start
 
     local metadata_printed=0
-    local effective_ms lyric_index delta i ready
+    local effective_ms lyric_index delta i ready now_ms position_ms
 
     while :; do
         if ! read_player_info; then
@@ -1254,7 +1345,22 @@ main() {
                 metadata_printed=1
             fi
 
-            effective_ms=$((PLAYER_POSITION_MS - SUBTITLE_OFFSET_MS))
+            position_ms="$PLAYER_POSITION_MS"
+            # termux-media-player only reports whole seconds. Between two
+            # changes of its value, advance the position with the local clock
+            # so the lyrics (and the sweep) do not move in one-second steps.
+            if [[ "$PLAYER_BACKEND" != "mpg123" && -n "${EPOCHREALTIME:-}" ]]; then
+                now_ms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+                if ((PLAYER_POSITION_MS != LAST_RAW_POS_MS)); then
+                    LAST_RAW_POS_MS="$PLAYER_POSITION_MS"
+                    CLOCK_AT_CHANGE_MS="$now_ms"
+                fi
+                position_ms=$((PLAYER_POSITION_MS + now_ms - CLOCK_AT_CHANGE_MS))
+                ((position_ms <= PLAYER_POSITION_MS + 1000)) ||
+                    position_ms=$((PLAYER_POSITION_MS + 1000))
+            fi
+
+            effective_ms=$((position_ms - SUBTITLE_OFFSET_MS))
             lyric_index="$(find_lyric_index "$effective_ms")"
 
             if ((LAST_POSITION_MS >= 0 &&
@@ -1265,16 +1371,19 @@ main() {
             delta=$((lyric_index - CURRENT_INDEX))
 
             if ((lyric_index >= 0 && delta > 0)); then
-                if ((delta > 5)); then
-                    print_lyric_index "$lyric_index"
-                else
-                    for ((i=CURRENT_INDEX + 1; i<=lyric_index; i++)); do
-                        print_lyric_index "$i"
+                lyric_finalize_active
+
+                if ((delta <= 5)); then
+                    for ((i=CURRENT_INDEX + 1; i<lyric_index; i++)); do
+                        print_done_line "$i"
                     done
                 fi
 
+                lyric_activate "$lyric_index"
                 CURRENT_INDEX="$lyric_index"
             fi
+
+            lyric_sweep_update "$effective_ms"
 
             LAST_POSITION_MS="$PLAYER_POSITION_MS"
         fi
@@ -1282,6 +1391,8 @@ main() {
         # mpg123 already waits inside read_player_info.
         [[ "$PLAYER_BACKEND" == "mpg123" ]] || sleep "$POLL_INTERVAL"
     done
+
+    lyric_finalize_active
 }
 
 main "$@"

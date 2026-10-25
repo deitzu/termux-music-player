@@ -23,6 +23,16 @@ PLAYER=auto
 # always, or never. Can also be set per run with --color / --no-color.
 COLOR=auto
 
-# 256-color codes (0-255) used in rotation for consecutive lyric sentences.
-# Examples: "81 213 222 120 183 215" (default), "196 46" (two colors).
-LYRIC_COLORS="81 213 222 120 183 215"
+# Karaoke-style lyrics: the sentence being sung is redrawn in place and
+# highlighted from left to right as the song plays (needs a terminal).
+# LRC files only have one timestamp per sentence, so the sweep is an estimate
+# spread over the time until the next sentence, at most LYRIC_SWEEP_MAX_MS.
+# Set LYRIC_SWEEP=0 to print each sentence once instead.
+LYRIC_SWEEP=1
+LYRIC_SWEEP_MAX_MS=5000
+
+# 256-color codes (0-255): the sung part, the part still to come, and
+# sentences that are already done.
+LYRIC_HI_COLOR=87
+LYRIC_LO_COLOR=240
+LYRIC_DONE_COLOR=250
