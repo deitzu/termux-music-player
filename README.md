@@ -114,11 +114,16 @@ If the automatic match is missing or wrong, use:
 music ~/Music/song.mp3 --select-lyrics
 ~~~
 
-The picker lists LRCLIB results that contain synced lyrics and displays their
-title, artist, album, and duration. Choose a number to save that result in the
-local cache; enter 0 to cancel. This option bypasses the existing cache, so a
-wrong cached result can be replaced. The picker is interactive and cannot be
-combined with --fetch-all.
+Before searching, the picker asks for the track title, artist, and album to send
+to LRCLIB. Press Enter to keep a field, or edit it—for example, remove a
+parenthetical suffix from the title. Enter `-` for artist or album to omit that
+field from the search. These edits affect only the lyric lookup; the local
+track metadata and cache key stay unchanged.
+
+The picker lists synced-lyrics results with their title, artist, album, and
+duration. Choose a number to save that result in the local cache; enter 0 to
+cancel. It bypasses the existing cache, so a wrong cached result can be
+replaced. The picker is interactive and cannot be combined with --fetch-all.
 
 ### Fetch lyrics in bulk
 
