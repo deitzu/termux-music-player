@@ -60,6 +60,7 @@ MUSIC_FILE=""
 FETCH_ALL=0
 FETCH_ROOT=""
 FORCE_FETCH=0
+SELECT_LYRICS=0
 TITLE=""
 ARTIST=""
 ALBUM=""
@@ -80,6 +81,7 @@ usage() {
     cat <<'EOF'
 Usage:
   termux-music-player <music-file> [options]
+  termux-music-player <music-file> --select-lyrics
   termux-music-player --fetch-all [directory] [--force]
 
 Playback options:
@@ -99,6 +101,7 @@ Bulk lyric options:
   --fetch-all DIR   Fetch and cache synced LRCLIB lyrics for music under DIR.
                     Defaults to ~/Music and does not start playback.
   --force           With --fetch-all, fetch again even when a lyric cache exists.
+  --select-lyrics   Pick a synced LRCLIB result manually; replaces this track's lyric cache.
 
 Other:
   -h, --help        Show this help.
@@ -214,6 +217,10 @@ parse_args() {
                 PLAYER="${1#--player=}"
                 shift
                 ;;
+            --select-lyrics)
+                SELECT_LYRICS=1
+                shift
+                ;;
             --fetch-all)
                 FETCH_ALL=1
                 shift
@@ -250,6 +257,8 @@ parse_args() {
     if ((FETCH_ALL)); then
         ((OFFSET_EXPLICIT == 0)) ||
             die "--offset cannot be used with --fetch-all."
+        ((SELECT_LYRICS == 0)) ||
+            die "--select-lyrics cannot be used with --fetch-all."
         FETCH_ROOT="${FETCH_ROOT:-$HOME/Music}"
         [[ -d "$FETCH_ROOT" ]] ||
             die "Fetch directory does not exist: $FETCH_ROOT"
@@ -1029,8 +1038,111 @@ curl_json() {
         "$@"
 }
 
+# Show synced LRCLIB matches and let the user choose one. The normal cache
+# key remains based on the local file's metadata so the choice is reused later.
+select_lyrics_manually() {
+    local all_json='[]' json candidates count choice synced selected_title selected_artist
+
+    [[ -t 0 ]] || {
+        echo "Manual lyric selection requires an interactive terminal." >&2
+        return 1
+    }
+
+    # Start with structured fields, then broaden the search only if there are
+    # too few selectable synced-lyrics results.
+    json="$(
+        curl_json \
+            --data-urlencode "track_name=$TITLE" \
+            --data-urlencode "artist_name=$ARTIST" \
+            --data-urlencode "album_name=$ALBUM" \
+            "$LRCLIB_SEARCH" 2>/dev/null || true
+    )"
+    if printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        all_json="$(jq -cn --argjson existing "$all_json" --argjson incoming "$json" \
+            '$existing + $incoming | reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end)')"
+    fi
+
+    candidates="$(printf '%s' "$all_json" | jq -c '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")]')"
+    count="$(printf '%s' "$candidates" | jq 'length')"
+
+    if ((count < 2)); then
+        sleep 0.3
+        json="$(
+            curl_json \
+                --data-urlencode "q=$TITLE $ARTIST" \
+                "$LRCLIB_SEARCH" 2>/dev/null || true
+        )"
+        if printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            all_json="$(jq -cn --argjson existing "$all_json" --argjson incoming "$json" \
+                '$existing + $incoming | reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end)')"
+        fi
+        candidates="$(printf '%s' "$all_json" | jq -c '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")]')"
+        count="$(printf '%s' "$candidates" | jq 'length')"
+    fi
+
+    if ((count < 2)); then
+        sleep 0.3
+        json="$(
+            curl_json \
+                --data-urlencode "q=$TITLE" \
+                "$LRCLIB_SEARCH" 2>/dev/null || true
+        )"
+        if printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            all_json="$(jq -cn --argjson existing "$all_json" --argjson incoming "$json" \
+                '$existing + $incoming | reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end)')"
+        fi
+        candidates="$(printf '%s' "$all_json" | jq -c '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")]')"
+        count="$(printf '%s' "$candidates" | jq 'length')"
+    fi
+
+    if ((count == 0)); then
+        echo "No synced-lyrics candidates found on LRCLIB." >&2
+        return 1
+    fi
+
+    echo "Synced-lyrics candidates for: $ARTIST - $TITLE" >&2
+    printf '%s\n' "  0. Cancel (keep no new selection)" >&2
+    printf '%s\n' "$candidates" | jq -r '
+        to_entries[] |
+        "\(.key + 1). \(.value.trackName // .value.name // "Unknown title") — \(.value.artistName // "Unknown artist") | \(.value.albumName // "Unknown album") | \((.value.duration // "?") | tostring)s"
+    ' >&2
+
+    while :; do
+        printf "Choose a number (1-%s, 0 to cancel): " "$count" >&2
+        IFS= read -r choice || return 1
+        [[ "$choice" =~ ^[0-9]+$ ]] || {
+            echo "Enter a candidate number." >&2
+            continue
+        }
+        choice=$((10#$choice))
+        if ((choice == 0)); then
+            echo "Manual lyric selection cancelled." >&2
+            return 1
+        fi
+        if ((choice >= 1 && choice <= count)); then
+            break
+        fi
+        echo "Choose a number between 1 and $count, or 0 to cancel." >&2
+    done
+
+    synced="$(printf '%s' "$candidates" | jq -r --argjson index "$((choice - 1))" '.[$index].syncedLyrics // ""')"
+    selected_title="$(printf '%s' "$candidates" | jq -r --argjson index "$((choice - 1))" '.[$index].trackName // .[$index].name // "Unknown title"')"
+    selected_artist="$(printf '%s' "$candidates" | jq -r --argjson index "$((choice - 1))" '.[$index].artistName // "Unknown artist"')"
+    [[ -n "$synced" ]] || return 1
+
+    mkdir -p "$CACHE_DIR"
+    printf '%s\n' "$synced" > "$CACHE_FILE"
+    LYRICS_FILE="$CACHE_FILE"
+    echo "Selected: $selected_artist - $selected_title (saved to cache)." >&2
+}
+
 fetch_lyrics() {
     local json synced query
+
+    if ((SELECT_LYRICS)); then
+        select_lyrics_manually
+        return $?
+    fi
 
     json="$(
         curl_json \
@@ -1073,9 +1185,22 @@ fetch_lyrics() {
                 "$LRCLIB_SEARCH" 2>/dev/null || true
         )"
 
+        # Only accept fuzzy-search results when title and artist match after
+        # normalization. Otherwise the user can run --select-lyrics.
         synced="$(
             printf '%s' "$json" |
-                jq -r '[.[] | select(.syncedLyrics != null and .syncedLyrics != "")][0].syncedLyrics // ""' 2>/dev/null || true
+                jq -r --arg title "$TITLE" --arg artist "$ARTIST" '
+                    def norm: ascii_downcase | gsub("[^a-z0-9]"; "");
+                    [
+                        .[] |
+                        select(($title | norm) != "" and ($artist | norm) != "") |
+                        select(.syncedLyrics != null and .syncedLyrics != "") |
+                        select(((.trackName // .name // "") | norm) != "") |
+                        select(((.artistName // "") | norm) != "") |
+                        select(((.trackName // .name // "") | norm) == ($title | norm)) |
+                        select(((.artistName // "") | norm) == ($artist | norm))
+                    ][0].syncedLyrics // ""
+                ' 2>/dev/null || true
         )"
 
         if [[ -n "$synced" ]]; then
@@ -1091,7 +1216,15 @@ fetch_lyrics() {
 
 prepare_lyrics() {
     mkdir -p "$CACHE_DIR"
-    find_cached_lyrics && return 0
+    CACHE_FILE="$CACHE_DIR/$(make_cache_key).lrc"
+
+    if ((SELECT_LYRICS == 0)); then
+        find_cached_lyrics && return 0
+    else
+        # Explicit selection means the user wants to replace any cached match.
+        LYRICS_FILE=""
+    fi
+
     fetch_lyrics || true
 }
 

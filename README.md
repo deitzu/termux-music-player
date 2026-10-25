@@ -9,6 +9,7 @@ A lightweight Bash music player for Termux with synchronized LRCLIB lyrics and a
 - Reads title, artist, and album from ID3v2/ID3v1, FLAC/Vorbis comments, Ogg/Opus comments, MP4/M4A atoms, and WAV RIFF INFO tags, with filename fallback.
 - Fetches timestamped lyrics from LRCLIB and caches them as LRC files for offline reuse.
 - Looks up lyrics using track metadata first. The fuzzy-search fallback only accepts a result when both normalized title and artist match.
+- Supports an optional manual LRCLIB result picker to correct a missing or incorrect match.
 - Shows track information with terminal colors and can animate lyric highlighting in place.
 - Supports character-, word-, or syllable-based highlighting and karaoke or spotlight styles.
 - Allows global and per-track subtitle offsets.
@@ -103,6 +104,21 @@ Available options:
 | --lyric-style spotlight | Show the whole sentence normally and highlight only the currently active unit. |
 | --fetch-all DIR | Fetch and cache lyrics for all supported music files in DIR without playing them. Defaults to ~/Music. |
 | --force | With --fetch-all, fetch again even if the lyric cache exists. |
+| --select-lyrics | Let the user choose a synced LRCLIB result manually and replace this track's cache. |
+
+### Select a lyric manually
+
+If the automatic match is missing or wrong, use:
+
+~~~bash
+music ~/Music/song.mp3 --select-lyrics
+~~~
+
+The picker lists LRCLIB results that contain synced lyrics and displays their
+title, artist, album, and duration. Choose a number to save that result in the
+local cache; enter 0 to cancel. This option bypasses the existing cache, so a
+wrong cached result can be replaced. The picker is interactive and cannot be
+combined with --fetch-all.
 
 ### Fetch lyrics in bulk
 
@@ -210,7 +226,7 @@ Only syncedLyrics is cached because the player displays timestamped terminal sub
 ~/.cache/termux-music-player/lyrics/
 ~~~
 
-The cache key is derived from artist, title, and album. Existing cache entries can be reused offline. With --force and --fetch-all, existing lyric cache entries are fetched again.
+The cache key is derived from artist, title, and album. Existing cache entries can be reused offline. Run --select-lyrics to replace a wrong match manually, or use --force with --fetch-all to fetch again in bulk.
 
 ## Music cloner
 
