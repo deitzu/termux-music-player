@@ -1,0 +1,21 @@
+name: Bash syntax checks
+
+on:
+  push:
+    branches: [fix/bash-syntax-error]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck parser diagnostics
+        run: shellcheck -s bash music.sh setup.sh music-clone
+        continue-on-error: true
+      - name: Validate Bash syntax
+        run: |
+          bash -n music.sh
+          bash -n setup.sh
+          bash -n music-clone
