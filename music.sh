@@ -1782,7 +1782,7 @@ report_playback_result() {
 
     seconds=$((PLAYER_POSITION_MS / 1000))
     formatted="$(format_time_seconds "$PLAYER_POSITION_MS")"
-    printf '\\n%s at %s (%ss).\\n' "$label" "$formatted" "$seconds"
+    printf '\n%s at %s (%ss).\n' "$label" "$formatted" "$seconds"
 }
 
 cleanup() {
@@ -1790,6 +1790,7 @@ cleanup() {
     CLEANUP_DONE=1
     ((PLAYER_STARTED)) || return 0
 
+    lyric_finalize_active
     refresh_player_position
     report_playback_result
     player_stop
