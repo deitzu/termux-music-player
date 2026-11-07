@@ -6,6 +6,7 @@ A lightweight Bash music player for Termux with synchronized LRCLIB lyrics and a
 
 - Plays local music files with either termux-media-player or the optional mpg123 backend.
 - Automatically selects mpg123 for MP3 files when installed; other formats use termux-media-player.
+- Can start MP3 playback from an offset using `--start-at` (or `--seek`) with the mpg123 backend.
 - Reads title, artist, and album from ID3v2/ID3v1, FLAC/Vorbis comments, Ogg/Opus comments, MP4/M4A atoms, and WAV RIFF INFO tags, with filename fallback.
 - Fetches timestamped lyrics from LRCLIB and caches them as LRC files for offline reuse.
 - Looks up lyrics using track metadata first. The fuzzy-search fallback only accepts a result when both normalized title and artist match.
@@ -81,6 +82,8 @@ termux-music-player ~/Music/song.mp3
 ~~~bash
 music ~/Music/song.mp3 --offset -300
 music ~/Music/song.mp3 --player mpg123
+music ~/Music/song.mp3 --start-at 90s
+music ~/Music/song.mp3 --start-at 2m30s
 music ~/Music/song.mp3 --color never
 music ~/Music/song.mp3 --color always
 music ~/Music/song.mp3 --lyric-unit syllable --lyric-style spotlight
@@ -94,6 +97,7 @@ Available options:
 | --player auto | Use mpg123 for MP3 when installed; otherwise use termux-media-player. |
 | --player termux | Force termux-media-player. |
 | --player mpg123 | Force mpg123; the input must be an MP3 file and mpg123 must be installed. |
+| --start-at TIME or --seek TIME | Start an MP3 at a time offset. Accepts seconds (`90s`), minutes (`2m30s`), hours (`1h`), or combined units (`1h2m3s`). Requires mpg123. |
 | --color auto | Use colors when stdout is a terminal and NO_COLOR is unset. |
 | --color always | Keep color codes in output even when it is redirected. In-place karaoke animation still requires a terminal. |
 | --color never or --no-color | Disable colors and the in-place sweep. |
@@ -264,5 +268,6 @@ Options include --watch, --interval SEC, --source DIR, and --dest DIR. Run music
 - The syllable splitter is heuristic and can be wrong for unusual words.
 - There is no playlist, full-screen TUI, downloader, or music database.
 - The player has no built-in audio library view; playback starts from a file path.
+- Start-time seeking is supported only for MP3 files through mpg123; termux-media-player does not expose a seek command.
 
 The goal is to keep the dependency graph small while gradually improving terminal playback and lyric synchronization.
