@@ -1,0 +1,21 @@
+name: Bash checks
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-and-time-parser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Bash syntax
+        run: |
+          bash -n music.sh
+          bash -n setup.sh
+          bash -n music-clone
+          bash -n tests/test-start-at-parser.sh
+      - name: Test start-time parser
+        run: bash tests/test-start-at-parser.sh
