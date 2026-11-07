@@ -7,6 +7,7 @@ A lightweight Bash music player for Termux with synchronized LRCLIB lyrics and a
 - Plays local music files with either termux-media-player or the optional mpg123 backend.
 - Automatically selects mpg123 for MP3 files when installed; other formats use termux-media-player.
 - Can start MP3 playback from an offset using `--start-at` (or `--seek`) with the mpg123 backend.
+- Reports the playback position when playback is interrupted or reaches the end.
 - Reads title, artist, and album from ID3v2/ID3v1, FLAC/Vorbis comments, Ogg/Opus comments, MP4/M4A atoms, and WAV RIFF INFO tags, with filename fallback.
 - Fetches timestamped lyrics from LRCLIB and caches them as LRC files for offline reuse.
 - Looks up lyrics using track metadata first. The fuzzy-search fallback only accepts a result when both normalized title and artist match.
