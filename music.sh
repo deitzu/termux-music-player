@@ -52,6 +52,12 @@ LAST_RAW_POS_MS=-1
 CLOCK_AT_CHANGE_MS=0
 PLAYER="auto"
 PLAYER_BACKEND=""
+START_AT_SECONDS=0
+START_AT_EXPLICIT=0
+PLAYER_STARTED=0
+STOP_REASON=""
+PLAYBACK_FINISHED=0
+CLEANUP_DONE=0
 MPG123_STARTED=0
 MPG123_ENDED=0
 MPG123_SAW_PLAY=0
@@ -90,6 +96,8 @@ Playback options:
   --player NAME     Playback backend: auto (default), termux, or mpg123.
                     auto uses mpg123 for MP3 when installed; other files use termux-media-player.
                     mpg123 supports MP3 only.
+  --start-at TIME   Start an MP3 at a time offset, e.g. 90s, 2m30s, or 1h.
+                    Requires the mpg123 backend; --seek is an alias.
   --color MODE      Color output: auto (default), always, or never.
   --no-color        Disable colors and the in-place karaoke sweep. NO_COLOR is respected.
   --lyric-unit UNIT Highlight step: char (default), word, or syllable.
@@ -111,6 +119,7 @@ Examples:
   music ~/Music/song.mp3
   music ~/Music/song.mp3 --offset -300
   music ~/Music/song.mp3 --player mpg123
+  music ~/Music/song.mp3 --start-at 1m30s
   music ~/Music/song.mp3 --lyric-unit syllable --lyric-style spotlight
   music ~/Music/song.flac --color never
   music --fetch-all
@@ -144,6 +153,42 @@ EOF
 die() {
     echo "Error: $*" >&2
     exit 1
+}
+
+parse_start_time() {
+    local raw="${1,,}" rest amount total=0
+
+    if [[ "$raw" =~ ^[0-9]+$ ]]; then
+        START_AT_SECONDS=$((10#$raw))
+        START_AT_EXPLICIT=1
+        return 0
+    fi
+
+    [[ -n "$raw" && "$raw" =~ ^([0-9]+h)?([0-9]+m)?([0-9]+s)?$ ]] ||
+        die "Invalid start time: $1. Use seconds (90s), minutes (2m30s), or hours (1h2m3s)."
+
+    rest="$raw"
+    if [[ "$rest" =~ ^([0-9]+)h ]]; then
+        amount="${BASH_REMATCH[1]}"
+        total=$((total + 10#$amount * 3600))
+        rest="${rest#"$amount"h}"
+    fi
+    if [[ "$rest" =~ ^([0-9]+)m ]]; then
+        amount="${BASH_REMATCH[1]}"
+        total=$((total + 10#$amount * 60))
+        rest="${rest#"$amount"m}"
+    fi
+    if [[ "$rest" =~ ^([0-9]+)s$ ]]; then
+        amount="${BASH_REMATCH[1]}"
+        total=$((total + 10#$amount))
+        rest=""
+    fi
+
+    [[ -z "$rest" ]] ||
+        die "Invalid start time: $1. Use seconds (90s), minutes (2m30s), or hours (1h2m3s)."
+
+    START_AT_SECONDS="$total"
+    START_AT_EXPLICIT=1
 }
 
 load_config() {
@@ -220,6 +265,15 @@ parse_args() {
                 PLAYER="${1#--player=}"
                 shift
                 ;;
+            --start-at|--seek)
+                (($# >= 2)) || die "$1 requires a time value."
+                parse_start_time "$2"
+                shift 2
+                ;;
+            --start-at=*|--seek=*)
+                parse_start_time "${1#*=}"
+                shift
+                ;;
             --select-lyrics)
                 SELECT_LYRICS=1
                 shift
@@ -262,6 +316,8 @@ parse_args() {
             die "--offset cannot be used with --fetch-all."
         ((SELECT_LYRICS == 0)) ||
             die "--select-lyrics cannot be used with --fetch-all."
+        ((START_AT_EXPLICIT == 0)) ||
+            die "--start-at cannot be used with --fetch-all."
         FETCH_ROOT="${FETCH_ROOT:-$HOME/Music}"
         [[ -d "$FETCH_ROOT" ]] ||
             die "Fetch directory does not exist: $FETCH_ROOT"
@@ -323,6 +379,10 @@ resolve_player() {
             die "PLAYER must be auto, termux or mpg123 (got: $PLAYER)."
             ;;
     esac
+
+    if ((START_AT_SECONDS > 0)) && [[ "$PLAYER_BACKEND" != "mpg123" ]]; then
+        die "--start-at requires mpg123 and an MP3 file. Install it with: pkg install mpg123"
+    fi
 }
 
 trim_text() {
@@ -793,6 +853,18 @@ format_duration_ms() {
     fi
 }
 
+format_time_seconds() {
+    local total=$(($1 / 1000)) h m s
+    h=$((total / 3600))
+    m=$(((total % 3600) / 60))
+    s=$((total % 60))
+    if ((h)); then
+        printf '%d:%02d:%02d' "$h" "$m" "$s"
+    else
+        printf '%02d:%02d' "$m" "$s"
+    fi
+}
+
 # Convert "12.34" seconds to whole milliseconds without forking.
 secs_to_ms() {
     local value="$1" whole frac
@@ -819,7 +891,14 @@ mpg123_start() {
     MPG123_SAW_PLAY=0
     kill -0 "${MPG123_PID:-0}" 2>/dev/null ||
         die "mpg123 could not start."
-    printf 'LOAD %s\n' "$MUSIC_FILE" >&"${MPG123[1]}"
+    if ((START_AT_SECONDS > 0)); then
+        # Load paused so the initial audio does not play before the seek.
+        printf 'LOADPAUSED %s\n' "$MUSIC_FILE" >&"${MPG123[1]}"
+        printf 'JUMP %ss\n' "$START_AT_SECONDS" >&"${MPG123[1]}"
+        printf 'PAUSE\n' >&"${MPG123[1]}"
+    else
+        printf 'LOAD %s\n' "$MUSIC_FILE" >&"${MPG123[1]}"
+    fi
 }
 
 mpg123_stop() {
@@ -858,6 +937,7 @@ mpg123_handle_line() {
             case "${1#@P }" in
                 2) PLAYER_STATUS="Playing"; MPG123_SAW_PLAY=1 ;;
                 1) PLAYER_STATUS="Paused" ;;
+                3) MPG123_ENDED=1; PLAYBACK_FINISHED=1 ;;
                 0) if ((MPG123_SAW_PLAY)); then MPG123_ENDED=1; fi ;;
             esac
             ;;
@@ -1668,13 +1748,68 @@ print_metadata() {
     echo
 }
 
+refresh_player_position() {
+    local info position current
+
+    [[ "$PLAYER_BACKEND" == "termux" ]] || return 0
+    info="$(termux-media-player info 2>/dev/null || true)"
+    [[ -n "$info" ]] || return 0
+
+    position="$(printf '%s\n' "$info" | sed -n 's/^Current Position: //p' | head -n1)"
+    [[ "$position" == */* ]] || return 0
+    position="$(printf '%s' "$position" | tr -d ' ')"
+    current="${position%%/*}"
+    PLAYER_POSITION_MS="$(time_to_ms "$current" 2>/dev/null || printf '%s' "$PLAYER_POSITION_MS")"
+}
+
+report_playback_result() {
+    local label formatted seconds
+
+    if [[ "$STOP_REASON" == "interrupt" || "$STOP_REASON" == "terminate" ]]; then
+        label="Playback stopped"
+    elif ((PLAYBACK_FINISHED)); then
+        label="Playback ended"
+    else
+        return 0
+    fi
+
+    # mpg123 reports an explicit end-of-track event, so its final duration is
+    # more accurate than the last periodic frame update.
+    if [[ "$PLAYER_BACKEND" == "mpg123" ]] &&
+        ((PLAYBACK_FINISHED && PLAYER_DURATION_MS > 0)); then
+        PLAYER_POSITION_MS="$PLAYER_DURATION_MS"
+    fi
+
+    seconds=$((PLAYER_POSITION_MS / 1000))
+    formatted="$(format_time_seconds "$PLAYER_POSITION_MS")"
+    printf '\\n%s at %s (%ss).\\n' "$label" "$formatted" "$seconds"
+}
+
 cleanup() {
-    lyric_finalize_active
+    ((CLEANUP_DONE == 0)) || return 0
+    CLEANUP_DONE=1
+    ((PLAYER_STARTED)) || return 0
+
+    refresh_player_position
+    report_playback_result
     player_stop
+    PLAYER_STARTED=0
+}
+
+handle_interrupt() {
+    STOP_REASON="interrupt"
+    exit 130
+}
+
+handle_terminate() {
+    STOP_REASON="terminate"
+    exit 143
 }
 
 main() {
-    trap cleanup EXIT INT TERM
+    trap cleanup EXIT
+    trap handle_interrupt INT
+    trap handle_terminate TERM
 
     load_config
     parse_args "$@"
@@ -1693,12 +1828,14 @@ main() {
     parse_lrc
 
     player_start
+    PLAYER_STARTED=1
 
     local metadata_printed=0
     local effective_ms lyric_index delta i ready now_ms position_ms
 
     while :; do
         if ! read_player_info; then
+            PLAYBACK_FINISHED=1
             break
         fi
 
